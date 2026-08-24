@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "durak"
+version = "0.1.0"
+description = "The Russian card game Durak, played against AI opponents in your terminal"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["durak", "cards", "game", "cli", "terminal", "ascii"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment :: Board Games",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+durak = "durak.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["durak*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
