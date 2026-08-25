@@ -21,10 +21,23 @@ YELLOW = "\033[33m"
 GREEN = "\033[32m"
 
 
+# Enough of the Russian alphabet to transliterate the handful of words the
+# tutorial uses, so --ascii shows "durak" rather than a row of question marks.
+CYRILLIC = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+CYRILLIC.update({upper: latin.capitalize() for upper, latin in
+                 ((c.upper(), t) for c, t in list(CYRILLIC.items()) if t)})
+
 # Applied to every line of output in --ascii mode, so that text coming from the
 # engine (card names, em dashes) survives on terminals with no Unicode support.
 ASCII_FALLBACKS = str.maketrans(
     {
+        **CYRILLIC,
         "♠": "S",
         "♥": "H",
         "♦": "D",
@@ -52,17 +65,42 @@ def to_ascii(text: str) -> str:
 
 
 class Style:
-    """Holds the two presentation switches: colour and pure-ASCII mode."""
+    """Presentation switches: colour, pure-ASCII mode, and the trump suit.
 
-    def __init__(self, color: bool = True, ascii_only: bool = False) -> None:
+    The trump suit lives here rather than being threaded through every drawing
+    call because it is fixed for a whole game and only ever affects colour —
+    trumps are outlined in cyan so they stand out from the suit they happen to
+    share a colour with. Set it with :meth:`set_trump` when a game starts.
+    """
+
+    def __init__(
+        self, color: bool = True, ascii_only: bool = False, trump: str | None = None
+    ) -> None:
         self.color = color
         self.ascii_only = ascii_only
+        self.trump = trump
 
     @classmethod
     def detect(cls, color: bool | None = None, ascii_only: bool = False) -> "Style":
         if color is None:
             color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         return cls(color=color, ascii_only=ascii_only)
+
+    def set_trump(self, suit: str | None) -> None:
+        self.trump = suit
+
+    def is_trump(self, card: Card) -> bool:
+        return self.trump is not None and card.suit == self.trump
+
+    def border_code(self, card: Card) -> str:
+        """Colour for a card's outline: cyan marks a trump."""
+        if self.is_trump(card):
+            return CYAN
+        return RED if card.suit in RED_SUITS else BOLD
+
+    def pip_code(self, card: Card) -> str:
+        """Colour for the rank and suit inside the card, which keep suit colour."""
+        return RED if card.suit in RED_SUITS else BOLD
 
     def paint(self, text: str, *codes: str) -> str:
         if not self.color or not codes:
@@ -73,41 +111,51 @@ class Style:
         return suit if self.ascii_only else SUIT_SYMBOLS[suit]
 
     def card_label(self, card: Card) -> str:
+        """One-line name, cyan when it is a trump."""
         text = card.label(self.ascii_only)
-        if card.suit in RED_SUITS:
-            return self.paint(text, RED)
-        return self.paint(text, BOLD)
+        if self.is_trump(card):
+            return self.paint(text, CYAN, BOLD)
+        return self.paint(text, self.pip_code(card))
 
     def cards_label(self, cards) -> str:
         return " ".join(self.card_label(c) for c in cards)
 
 
-def _box(style: Style, top: str, mid: str, bot: str) -> list[str]:
-    """Frame three pre-padded content rows in a card-sized box."""
+def _frame(style: Style) -> tuple[str, str, str]:
+    """The three pieces of a card's outline: top, bottom, and one side char."""
     span = CARD_WIDTH - 2
     if style.ascii_only:
-        head = foot = "+" + "-" * span + "+"
-        side = "|"
-    else:
-        head = "┌" + "─" * span + "┐"
-        foot = "└" + "─" * span + "┘"
-        side = "│"
+        edge = "+" + "-" * span + "+"
+        return edge, edge, "|"
+    return "┌" + "─" * span + "┐", "└" + "─" * span + "┘", "│"
+
+
+def _box(style: Style, top: str, mid: str, bot: str) -> list[str]:
+    """Frame three pre-padded content rows in a card-sized box (uncoloured)."""
+    head, foot, side = _frame(style)
     return [head, *(f"{side}{row}{side}" for row in (top, mid, bot)), foot]
 
 
 def card_art(card: Card, style: Style) -> list[str]:
-    """Five lines of art for a single card."""
+    """Five lines of art for a single card.
+
+    The outline and the pip are coloured separately so a trump can be outlined
+    in cyan while its rank and suit keep the usual red or black.
+    """
     inner = CARD_WIDTH - 2
     rank = card.rank_name
-    suit = style.suit(card.suit)
-    top = rank.ljust(inner)
-    mid = suit.center(inner)
-    bot = rank.rjust(inner)
-    lines = _box(style, top, mid, bot)
-    if style.color:
-        code = RED if card.suit in RED_SUITS else BOLD
-        lines = [style.paint(line, code) for line in lines]
-    return lines
+    rows = (rank.ljust(inner), style.suit(card.suit).center(inner), rank.rjust(inner))
+    if not style.color:
+        return _box(style, *rows)
+
+    head, foot, side = _frame(style)
+    edge = style.border_code(card)
+    bar = style.paint(side, edge)
+    return [
+        style.paint(head, edge),
+        *(f"{bar}{style.paint(row, style.pip_code(card))}{bar}" for row in rows),
+        style.paint(foot, edge),
+    ]
 
 
 def card_back(style: Style) -> list[str]:

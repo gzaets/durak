@@ -18,7 +18,7 @@ import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable, NamedTuple, Optional, Sequence
 
-from .cards import Card, beats, shuffled_deck, sort_key
+from .cards import Card, beats, card_power, shuffled_deck, sort_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from .players import Player as PlayerProtocol
@@ -390,7 +390,8 @@ class Durak:
             if card is None:
                 if initial:
                     # Opening the bout is mandatory; take their cheapest card.
-                    card = min(legal, key=sort_key(self.trump))
+                    # card_power, not sort_key: display order is not value order.
+                    card = min(legal, key=lambda c: card_power(c, self.trump))
                 else:
                     passed.add(id(player))
                     continue

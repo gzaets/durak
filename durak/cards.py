@@ -74,11 +74,16 @@ def beats(attack: Card, defense: Card, trump: str) -> bool:
 
 
 def sort_key(trump: str):
-    """Sort hands as players expect: plain suits first, trumps last, low to high."""
+    """Display order for a hand: trumps first, then the plain suits, low to high.
+
+    Trumps lead so your strongest cards are always in the same place — the far
+    left — no matter which suit happens to be trump this game. This is display
+    order only; for "how much is this card worth" use :func:`card_power`.
+    """
 
     def key(card: Card) -> tuple[int, int, int]:
         is_trump = card.suit == trump
-        return (int(is_trump), SUITS.index(card.suit), card.rank)
+        return (0 if is_trump else 1, SUITS.index(card.suit), card.rank)
 
     return key
 

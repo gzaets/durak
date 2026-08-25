@@ -37,10 +37,11 @@ means adding a transport, not rewriting the rules.
   Your hand (6)
   ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
   │6    │ │9    │ │A    │ │7    │ │10   │ │Q    │
-  │  ♠  │ │  ♠  │ │  ♠  │ │  ♥  │ │  ♥  │ │  ♣  │
+  │  ♦  │ │  ♦  │ │  ♦  │ │  ♥  │ │  ♥  │ │  ♣  │
   │    6│ │    9│ │    A│ │    7│ │   10│ │    Q│
   └─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘
      1       ·       3       ·       ·       6
+  (the three diamonds are trumps here, so they lead and are outlined in cyan)
 
   Throw in on Ivan? [1,3,6], d=done   (? help, q quit)
   >
@@ -54,8 +55,19 @@ No installation needed:
 python3 -m durak
 ```
 
-It opens with a setup screen asking for the mode, the number of opponents and
-the difficulty:
+It opens on a menu, with a built-in tutorial covering the rules and where the
+game comes from:
+
+```
+  Durak
+   * 1) Play — set up a game and deal
+     2) How to play — the rules, and where the game comes from
+     3) Quit — leave
+  > [1-3, enter for 1]
+```
+
+`durak --tutorial` prints the same text straight to stdout and exits. Choosing
+*Play* asks for the mode, the number of opponents and the difficulty:
 
 ```
   Game mode
@@ -88,7 +100,8 @@ durak
 -m, --mode MODE         classic | transfer                 (asked if omitted)
 -n, --name NAME         your name at the table             (default "You")
 -d, --difficulty        easy | normal | hard               (asked if omitted)
--y, --defaults          skip the setup questions
+-y, --defaults          skip the menu and setup questions
+    --tutorial          print the rules and history, then exit
     --deck {20,24,36,52}  deck size                        (default 36)
     --seed N            reproducible shuffle
     --speed SECONDS     pause per opponent move, 0 = instant  (default 0.6)
@@ -124,6 +137,13 @@ durak --simulate 1000 -p 3  # no UI: 1000 bot games, printed as a tally
 | `q`         | quit                                      |
 
 Cards you cannot legally play right now are dimmed and lose their number.
+
+**Trumps are outlined in cyan and always sit at the far left of your hand**, so
+your strongest cards are in the same place every game no matter which suit
+turns up trump. The rank and suit inside keep their usual red or black, so a
+trump heart still reads as a heart — only the outline changes. In `--compact`
+mode a playable trump is cyan where a playable plain card is green; in
+`--no-color` or `--ascii` mode the ordering still holds.
 
 `b3` / `p3` exist because one card can sometimes do both: if the six of hearts
 is attacking you and trumps are spades, your six of spades *beats* it and is
@@ -209,7 +229,8 @@ durak/players.py   the Player interface and the interactive player
 durak/ai.py        the computer opponents
 durak/ui.py        board drawing and input parsing
 durak/render.py    ASCII/ANSI primitives — knows nothing about Durak
-durak/cli.py       argument parsing and the match loop
+durak/cli.py       argument parsing, the menu, and the match loop
+durak/tutorial.py  the in-game rules-and-history text
 ```
 
 The engine never reads from the terminal and the UI never enforces a rule, so
@@ -222,7 +243,8 @@ pip install -e '.[dev]'
 python3 -m pytest
 ```
 
-74 tests covering the card rules, bout resolution, drawing and elimination,
-the AI's tactics and relative strength, rendering, and input parsing. The AI
-strength tests play thousands of hands but use fixed seeds, so they are
-deterministic rather than flaky.
+148 tests covering the card rules in both modes, bout resolution and transfers,
+drawing and elimination, the AI's tactics and relative strength, rendering and
+trump colouring, input parsing, and the menu. The AI strength tests play
+thousands of hands but use fixed seeds, so they are deterministic rather than
+flaky.

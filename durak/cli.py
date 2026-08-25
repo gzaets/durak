@@ -11,6 +11,7 @@ from .ai import DIFFICULTIES, AIPlayer
 from .cards import DECK_SIZES
 from .engine import CLASSIC, HAND_SIZE, TRANSFER, Durak, GameResult
 from .players import HumanPlayer, QuitGame
+from .tutorial import SECTIONS as TUTORIAL_SECTIONS, text as tutorial_text
 from .render import Style
 from .ui import TerminalUI
 
@@ -94,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="how well the computer opponents play (asked if omitted)",
     )
     parser.add_argument(
+        "--tutorial",
+        action="store_true",
+        help="print the rules and history, then exit",
+    )
+    parser.add_argument(
         "-y",
         "--defaults",
         action="store_true",
@@ -160,6 +166,24 @@ def resolve_table_size(args, parser) -> None:
                 f"{args.opponents} opponents means {implied} players"
             )
         args.players = implied
+
+
+def main_menu(ui: TerminalUI) -> None:
+    """Show the front menu until the player chooses to start a game."""
+    while True:
+        choice = ui.ask_choice(
+            "Durak",
+            [
+                ("play", "Play", "set up a game and deal"),
+                ("learn", "How to play", "the rules, and where the game comes from"),
+                ("quit", "Quit", "leave"),
+            ],
+        )
+        if choice == "play":
+            return
+        if choice == "quit":
+            raise QuitGame
+        ui.show_pages(TUTORIAL_SECTIONS, footer="That is all of it — good luck.")
 
 
 def run_setup(ui: TerminalUI, args) -> None:
@@ -249,6 +273,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rng = random.Random(args.seed)
     resolve_table_size(args, parser)
 
+    if args.tutorial:
+        print(tutorial_text())
+        return 0
+
     style = Style.detect(color=False if args.no_color else None, ascii_only=args.ascii)
     ui = TerminalUI(
         style=style,
@@ -261,6 +289,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # Ask about whatever was not given on the command line, unless there is
         # nobody at the keyboard to ask.
         if not args.simulate and not args.defaults and sys.stdin.isatty():
+            ui.splash("A Russian card game for 2 to 4 — last one holding cards loses")
+            main_menu(ui)
             ui.splash("Set up your game")
             run_setup(ui, args)
         for field, value in DEFAULTS.items():

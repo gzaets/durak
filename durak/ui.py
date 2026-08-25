@@ -102,6 +102,7 @@ class TerminalUI:
         """Let the UI redraw the board whenever the engine reports something."""
         self.engine = engine
         self.human = human
+        self.style.set_trump(engine.trump)
 
     def event(self, message: str) -> None:
         """Engine log sink: animate the board so AI moves are watchable."""
@@ -239,7 +240,12 @@ class TerminalUI:
             parts = []
             for index, card in enumerate(view.hand):
                 text = f"{index + 1}:{card.label(s.ascii_only)}"
-                parts.append(self._p(text, GREEN if playable[index] else DIM))
+                if not playable[index]:
+                    code = DIM
+                else:
+                    # Cyan and green both mean playable; cyan also means trump.
+                    code = CYAN if s.is_trump(card) else GREEN
+                parts.append(self._p(text, code))
             lines.append("    " + "  ".join(parts))
         else:
             art = render.hand_art(view.hand, s, labels=labels, playable=playable)
@@ -430,6 +436,22 @@ class TerminalUI:
             if answer.isdigit() and 1 <= int(answer) <= len(options):
                 return options[int(answer) - 1][0]
             self.write(self._p(f"  '{answer}' is not one of the options.\n", YELLOW))
+
+    def show_pages(self, pages: Sequence[str], footer: str = "") -> None:
+        """Print long text a page at a time, so it does not scroll past."""
+        total = len(pages)
+        for number, page in enumerate(pages, start=1):
+            render.clear_screen(self.clear)
+            self.write(page + "\n")
+            if number < total:
+                counter = self._p(f"({number}/{total})", DIM)
+                if self._read(f"  {counter} enter to continue, q to go back  ") in (
+                    "q", "quit", "back", "b"
+                ):
+                    return
+        if footer:
+            self.write("\n  " + footer + "\n")
+        self._read("  enter to go back  ")
 
     def ask_yes_no(self, question: str, default: bool = True) -> bool:
         suffix = "[Y/n]" if default else "[y/N]"

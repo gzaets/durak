@@ -7,7 +7,7 @@ import random
 
 import pytest
 
-from durak import cli, render
+from durak import cli, render, tutorial
 from durak.ai import AIPlayer
 from durak.cards import Card
 from durak.engine import Durak, TableEntry, Transfer
@@ -446,3 +446,117 @@ def test_a_whole_transfer_game_can_be_played_through_stdin(monkeypatch, capsys, 
     assert code == 0
     assert "DURAK" in out and "Bouts played:" in out
     assert "transfer mode" in out
+
+
+# ---------------------------------------------------- trump colour and order
+
+
+def test_a_trump_is_outlined_in_cyan():
+    style = Style(color=True, trump=H)
+    art = "\n".join(render.card_art(Card(10, H), style))
+    assert render.CYAN in art
+
+
+def test_a_plain_card_is_not_outlined_in_cyan():
+    style = Style(color=True, trump=H)
+    for card in (Card(10, D), Card(10, S)):
+        assert render.CYAN not in "\n".join(render.card_art(card, style))
+
+
+def test_a_trump_keeps_its_suit_colour_inside_the_cyan_outline():
+    """A red trump is still recognisably red: only the outline turns cyan."""
+    style = Style(color=True, trump=H)
+    art = render.card_art(Card(10, H), style)
+    border, pip = art[0], art[2]
+    assert render.CYAN in border and render.RED not in border
+    assert render.RED in pip
+
+
+def test_the_same_card_is_only_cyan_when_it_is_trump():
+    plain = "\n".join(render.card_art(Card(10, H), Style(color=True, trump=S)))
+    trump = "\n".join(render.card_art(Card(10, H), Style(color=True, trump=H)))
+    assert render.CYAN not in plain and render.CYAN in trump
+
+
+def test_trump_colouring_switches_off_with_colour():
+    art = "\n".join(render.card_art(Card(10, H), Style(color=False, trump=H)))
+    assert "\033" not in art
+
+
+def test_cards_keep_their_shape_whether_or_not_they_are_trump():
+    for style in (Style(color=True, trump=H), Style(color=True, trump=S)):
+        art = render.card_art(Card(10, H), style)
+        assert len(art) == render.CARD_HEIGHT
+        assert all(render._visible_len(line) == render.CARD_WIDTH for line in art)
+
+
+def test_a_one_line_card_label_is_cyan_for_a_trump():
+    style = Style(color=True, trump=H)
+    assert render.CYAN in style.card_label(Card(10, H))
+    assert render.CYAN not in style.card_label(Card(10, D))
+
+
+def test_the_ui_picks_up_the_trump_when_a_game_starts():
+    ui = ScriptedUI([])
+    assert ui.style.trump is None
+    bots = [AIPlayer("a", "normal"), AIPlayer("b", "normal")]
+    game = Durak(bots, rng=random.Random(0))
+    ui.attach(game, bots[0])
+    assert ui.style.trump == game.trump
+
+
+def test_cyrillic_survives_ascii_mode():
+    assert render.to_ascii("дурак") == "durak"
+    assert render.to_ascii("Дурак").lower() == "durak"
+
+
+# ------------------------------------------------------- tutorial and menu
+
+
+def test_the_tutorial_covers_the_rules_it_needs_to():
+    body = tutorial.text().lower()
+    for topic in ("trump", "beat", "throw", "transfer", "durak", "history"):
+        assert topic in body
+
+
+def test_the_tutorial_is_paged_rather_than_dumped():
+    assert len(tutorial.SECTIONS) > 1
+    assert all(section.strip() for section in tutorial.SECTIONS)
+
+
+def test_the_tutorial_survives_ascii_mode():
+    assert render.to_ascii(tutorial.text()).isascii()
+
+
+def test_the_tutorial_flag_prints_and_exits(capsys):
+    assert cli.main(["--tutorial"]) == 0
+    assert "Durak" in capsys.readouterr().out
+
+
+def test_paging_stops_early_when_asked():
+    ui = ScriptedUI(["", "q"])
+    ui.show_pages(["one", "two", "three", "four"])
+    assert not ui.commands  # it stopped at the q rather than reading on
+
+
+def test_paging_walks_every_page_to_the_end():
+    ui = ScriptedUI(["", "", ""])
+    ui.show_pages(["one", "two", "three"])  # 2 gaps, then the closing prompt
+    assert not ui.commands
+
+
+def test_the_menu_starts_a_game():
+    ui = ScriptedUI(["1"])
+    cli.main_menu(ui)  # returns rather than raising
+
+
+def test_the_menu_quits():
+    with pytest.raises(QuitGame):
+        cli.main_menu(ScriptedUI(["3"]))
+
+
+def test_the_menu_shows_the_tutorial_then_comes_back():
+    # 2 = how to play, then page through, then 1 = play.
+    ui = ScriptedUI(["2"] + [""] * len(tutorial.SECTIONS) + ["1"])
+    cli.main_menu(ui)
+    assert not ui.commands

@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from durak.cards import Card, beats, build_deck, sort_key
+from durak.cards import Card, beats, build_deck, card_power, sort_key
 from durak.engine import CLASSIC, TRANSFER, Durak, TableEntry, Transfer
 from durak.players import Player
 
@@ -94,10 +94,26 @@ def test_different_plain_suits_never_beat():
     assert not beats(Card(6, H), Card(14, D), trump=S)
 
 
-def test_hands_sort_with_trumps_last():
+def test_hands_sort_with_trumps_first():
     hand = [Card(14, H), Card(6, S), Card(7, H), Card(14, S)]
     hand.sort(key=sort_key(S))
-    assert hand[-2:] == [Card(6, S), Card(14, S)]
+    # Trumps lead, low to high, then the plain suits.
+    assert hand == [Card(6, S), Card(14, S), Card(7, H), Card(14, H)]
+
+
+def test_the_trump_suit_always_leads_whichever_suit_it_is():
+    hand = [Card(14, S), Card(6, H), Card(6, C), Card(6, D)]
+    for trump in ("S", "H", "D", "C"):
+        ordered = sorted(hand, key=sort_key(trump))
+        assert ordered[0].suit == trump
+
+
+def test_display_order_is_not_value_order():
+    """The leftmost card is the lowest trump, which is not the cheapest card."""
+    hand = [Card(6, S), Card(7, H)]
+    hand.sort(key=sort_key(S))
+    assert hand[0] == Card(6, S)
+    assert min(hand, key=lambda c: card_power(c, S)) == Card(7, H)
 
 
 # ------------------------------------------------------------- legal moves
