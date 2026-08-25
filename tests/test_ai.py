@@ -6,13 +6,14 @@ seed, so they are deterministic rather than flaky.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 
 import pytest
 
 from durak.ai import TACTICS, AIPlayer, suggest_defense, suggest_move
 from durak.cards import Card
-from durak.engine import Durak, TableEntry
+from durak.engine import TRANSFER, Durak, TableEntry, Transfer
 
 S, H, D, C = "S", "H", "D", "C"
 
@@ -181,3 +182,69 @@ def test_hints_offer_a_legal_move():
     if defenses:
         hint = suggest_defense(game.view_for(other), attack, defenses)
         assert hint is None or hint in defenses
+
+
+# ------------------------------------------------------------ transfer mode
+
+
+def test_every_difficulty_finishes_a_transfer_game():
+    for difficulty in TACTICS:
+        rng = random.Random(12)
+        players = [AIPlayer(f"p{i}", difficulty, rng) for i in range(4)]
+        result = Durak(players, rng=rng, mode=TRANSFER).run()
+        assert result.durak is None or result.durak in {p.name for p in players}
+
+
+@pytest.mark.parametrize("difficulty", list(TACTICS))
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_bots_stay_legal_in_transfer_mode(difficulty, count):
+    rng = random.Random(8)
+    for _ in range(25):
+        players = [AIPlayer(f"p{i}", difficulty, rng) for i in range(count)]
+        Durak(players, rng=rng, mode=TRANSFER).run()  # the engine raises on cheating
+
+
+def test_a_bot_passes_the_attack_on_with_a_spare_low_card():
+    bot = AIPlayer("bot", "normal")
+    other = AIPlayer("other", "normal")
+    game = Durak([other, bot], rng=random.Random(0), mode=TRANSFER)
+    game.trump = S
+    bot.hand = [Card(6, D), Card(14, S)]
+    other.hand = [Card(9, C), Card(10, C)]
+    game.table = [TableEntry(Card(6, H))]
+    move = bot.choose_defense(game.view_for(bot), Card(6, H), [Card(14, S)], [Card(6, D)])
+    assert move == Transfer(Card(6, D))
+
+
+def test_a_bot_blocks_cheaply_rather_than_passing_with_a_big_trump():
+    bot = AIPlayer("bot", "normal")
+    other = AIPlayer("other", "normal")
+    game = Durak([other, bot], rng=random.Random(0), mode=TRANSFER)
+    game.trump = S
+    # The only card of the right rank is the ace of trumps; a spare seven beats.
+    bot.hand = [Card(6, S), Card(7, H)]
+    other.hand = [Card(9, C), Card(10, C)]
+    game.table = [TableEntry(Card(6, H))]
+    move = bot.choose_defense(game.view_for(bot), Card(6, H), [Card(7, H), Card(6, S)], [Card(6, S)])
+    assert move == Card(7, H)
+
+
+def test_the_transfer_bonus_actually_changes_the_decision():
+    """The knob the tuning script sweeps has to have teeth at both extremes."""
+    other = AIPlayer("other", "normal")
+    table = [TableEntry(Card(6, H))]
+
+    def decide(bonus):
+        bot = AIPlayer("bot", "normal", tactics=dataclasses.replace(
+            TACTICS["normal"], transfer_bonus=bonus))
+        game = Durak([other, bot], rng=random.Random(0), mode=TRANSFER)
+        game.trump = S
+        bot.hand = [Card(6, S), Card(7, H)]
+        other.hand = [Card(9, C), Card(10, C)]
+        game.table = list(table)
+        return bot.choose_defense(
+            game.view_for(bot), Card(6, H), [Card(7, H), Card(6, S)], [Card(6, S)]
+        )
+
+    assert decide(999) == Transfer(Card(6, S))  # always pass when you can
+    assert decide(-999) == Card(7, H)  # never pass while a block exists

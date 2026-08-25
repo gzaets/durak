@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Union
 
 from .cards import Card
-from .engine import GameView, TableEntry
+from .engine import GameView, TableEntry, Transfer
 
 
 class Player:
@@ -28,9 +28,19 @@ class Player:
         raise NotImplementedError
 
     def choose_defense(
-        self, view: GameView, attack: Card, legal: Sequence[Card]
-    ) -> Optional[Card]:
-        """Pick a card that beats ``attack``, or ``None`` to take the table."""
+        self,
+        view: GameView,
+        attack: Card,
+        legal: Sequence[Card],
+        transfers: Sequence[Card] = (),
+    ) -> Union[Card, "Transfer", None]:
+        """Answer the card in front of you.
+
+        Return a card from ``legal`` to beat it, ``Transfer(card)`` with a card
+        from ``transfers`` to pass the whole attack to the next player, or
+        ``None`` to take everything on the table. ``transfers`` is only ever
+        non-empty in transfer mode.
+        """
         raise NotImplementedError
 
     def observe(self, table: Sequence["TableEntry"], taken_by: Optional[str]) -> None:
@@ -59,5 +69,5 @@ class HumanPlayer(Player):
     def choose_attack(self, view, legal, initial):
         return self.ui.ask_attack(view, list(legal), initial)
 
-    def choose_defense(self, view, attack, legal):
-        return self.ui.ask_defense(view, attack, list(legal))
+    def choose_defense(self, view, attack, legal, transfers=()):
+        return self.ui.ask_defense(view, attack, list(legal), list(transfers))

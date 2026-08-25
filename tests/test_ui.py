@@ -10,7 +10,7 @@ import pytest
 from durak import cli, render
 from durak.ai import AIPlayer
 from durak.cards import Card
-from durak.engine import Durak, TableEntry
+from durak.engine import Durak, TableEntry, Transfer
 from durak.players import QuitGame
 from durak.render import Style
 from durak.ui import TerminalUI
@@ -39,9 +39,11 @@ class ScriptedUI(TerminalUI):
         super().__init__(**kwargs)
         self.commands = list(commands)
         self.frames = 0
+        self.last_note = ""
 
     def draw(self, view, legal=(), note=""):
         self.frames += 1
+        self.last_note = note
 
     def write(self, text):
         pass
@@ -251,3 +253,196 @@ def test_a_whole_game_can_be_played_through_stdin(monkeypatch, capsys, players):
     assert code == 0
     assert "DURAK" in out
     assert "Bouts played:" in out
+
+
+# ------------------------------------------------------------ transfer mode
+
+
+def transfer_view(hand, table, trump=S, receiver="Ivan"):
+    view = a_view(hand, trump=trump, table=table)
+    view.mode = "transfer"
+    view.receiver = receiver
+    return view
+
+
+def test_a_number_that_can_only_pass_the_attack_on_passes_it():
+    hand = [Card(6, D), Card(10, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    ui = ScriptedUI(["1"])
+    assert ui.ask_defense(view, Card(6, H), [], [Card(6, D)]) == Transfer(Card(6, D))
+
+
+def test_a_number_that_can_only_beat_still_beats():
+    hand = [Card(6, D), Card(10, H)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    ui = ScriptedUI(["2"])
+    assert ui.ask_defense(view, Card(6, H), [Card(10, H)], [Card(6, D)]) == Card(10, H)
+
+
+def test_a_card_that_could_do_either_has_to_be_spelled_out():
+    # The six of trumps beats the six of hearts and is also a legal transfer.
+    hand = [Card(6, S), Card(10, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    ui = ScriptedUI(["1", "b1"])
+    assert ui.ask_defense(view, Card(6, H), [Card(6, S)], [Card(6, S)]) == Card(6, S)
+    assert "can beat it or pass it on" in ui.last_note
+
+    ui = ScriptedUI(["1", "p1"])
+    move = ui.ask_defense(view, Card(6, H), [Card(6, S)], [Card(6, S)])
+    assert move == Transfer(Card(6, S))
+
+
+def test_a_bare_p_works_when_only_one_card_could_pass():
+    hand = [Card(6, D), Card(10, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    ui = ScriptedUI(["p"])
+    assert ui.ask_defense(view, Card(6, H), [], [Card(6, D)]) == Transfer(Card(6, D))
+
+
+def test_a_bare_p_asks_which_when_several_cards_could_pass():
+    hand = [Card(6, D), Card(6, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    ui = ScriptedUI(["p", "p2"])
+    move = ui.ask_defense(view, Card(6, H), [], [Card(6, D), Card(6, C)])
+    assert move == Transfer(Card(6, C))
+    assert "Add its number" in ui.last_note
+
+
+def test_taking_still_works_when_a_transfer_is_on_offer():
+    hand = [Card(6, D)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    assert ScriptedUI(["t"]).ask_defense(view, Card(6, H), [], [Card(6, D)]) is None
+
+
+def test_the_prompt_names_who_the_attack_would_go_to():
+    hand = [Card(6, D)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))], receiver="Olga")
+    ui = ScriptedUI(["t"])
+    ui.ask_defense(view, Card(6, H), [], [Card(6, D)])
+    assert "pass to" in ui.last_note and "Olga" in ui.last_note
+
+
+def test_classic_mode_never_shows_the_pass_option():
+    hand = [Card(10, H)]
+    view = a_view(hand, table=[TableEntry(Card(6, H))])
+    ui = ScriptedUI(["1"])
+    ui.ask_defense(view, Card(6, H), [Card(10, H)], [])
+    assert "pass to" not in ui.last_note
+
+
+# ------------------------------------------------------------- setup screen
+
+
+def test_the_setup_menu_returns_the_chosen_value():
+    ui = ScriptedUI(["2"])
+    options = [("classic", "Classic", "..."), ("transfer", "Transfer", "...")]
+    assert ui.ask_choice("Game mode", options) == "transfer"
+
+
+def test_the_setup_menu_falls_back_to_the_default_on_enter():
+    ui = ScriptedUI([""])
+    options = [("classic", "Classic", "..."), ("transfer", "Transfer", "...")]
+    assert ui.ask_choice("Game mode", options, default=1) == "transfer"
+
+
+def test_the_setup_menu_re_asks_on_nonsense():
+    ui = ScriptedUI(["banana", "9", "1"])
+    options = [("classic", "Classic", "..."), ("transfer", "Transfer", "...")]
+    assert ui.ask_choice("Game mode", options) == "classic"
+
+
+def test_quitting_the_setup_menu_leaves_the_game():
+    with pytest.raises(QuitGame):
+        ScriptedUI(["q"]).ask_choice("Game mode", [("a", "A", ""), ("b", "B", "")])
+
+
+# --------------------------------------------------------- modes and setup
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("classic", "classic"),
+        ("Traditional", "classic"),
+        ("transfer", "transfer"),
+        ("perevodnoy", "transfer"),
+        ("podkidnoy", "transfer"),
+        ("throw-in", "transfer"),
+        ("Throw In", "transfer"),
+    ],
+)
+def test_every_name_people_use_for_the_modes_is_accepted(text, expected):
+    assert cli.parse_mode(text) == expected
+
+
+def test_an_unknown_mode_name_is_rejected():
+    with pytest.raises(Exception):
+        cli.parse_mode("bridge")
+
+
+def test_opponents_and_players_are_two_ways_of_saying_the_same_thing():
+    parser = cli.build_parser()
+    args = parser.parse_args(["--opponents", "3"])
+    cli.resolve_table_size(args, parser)
+    assert args.players == 4
+
+
+def test_contradicting_opponents_and_players_is_an_error():
+    parser = cli.build_parser()
+    args = parser.parse_args(["--opponents", "3", "--players", "2"])
+    with pytest.raises(SystemExit):
+        cli.resolve_table_size(args, parser)
+
+
+def test_agreeing_opponents_and_players_are_fine():
+    parser = cli.build_parser()
+    args = parser.parse_args(["--opponents", "3", "--players", "4"])
+    cli.resolve_table_size(args, parser)
+    assert args.players == 4
+
+
+def test_setup_asks_for_everything_that_was_not_given():
+    args = cli.build_parser().parse_args([])
+    ui = ScriptedUI(["2", "3", "3"])  # transfer, 3 opponents, hard
+    cli.run_setup(ui, args)
+    assert (args.mode, args.players, args.difficulty) == ("transfer", 4, "hard")
+
+
+def test_setup_skips_whatever_the_flags_already_settled():
+    args = cli.build_parser().parse_args(["--mode", "transfer", "--opponents", "2"])
+    cli.resolve_table_size(args, cli.build_parser())
+    ui = ScriptedUI(["1"])  # only difficulty is still open
+    cli.run_setup(ui, args)
+    assert (args.mode, args.players, args.difficulty) == ("transfer", 3, "easy")
+    assert not ui.commands  # exactly one question was asked
+
+
+def test_setup_is_skipped_when_nothing_is_attached_to_stdin(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli.main(["--simulate", "3", "--seed", "1"]) == 0
+    assert "classic mode" in capsys.readouterr().out
+
+
+def test_simulate_reports_the_mode(capsys):
+    assert cli.main(["--simulate", "3", "--mode", "podkidnoy", "--seed", "1"]) == 0
+    assert "transfer mode" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("players", [2, 3, 4])
+def test_a_whole_transfer_game_can_be_played_through_stdin(monkeypatch, capsys, players):
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n\n" * 3000))
+    code = cli.main(
+        [
+            "--players", str(players),
+            "--mode", "transfer",
+            "--rounds", "1",
+            "--speed", "0",
+            "--no-clear",
+            "--no-color",
+            "--seed", "13",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "DURAK" in out and "Bouts played:" in out
+    assert "transfer mode" in out

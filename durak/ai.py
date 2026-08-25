@@ -6,6 +6,9 @@ take:
 ``easy``    plays a legal card more or less at random and defends greedily.
 ``normal``  sheds its cheapest cards, hoards trumps, and knows when taking a
             bout is cheaper than burning a high trump.
+In transfer mode everyone but ``easy`` also weighs passing the attack on
+against blocking it, using the same card-cost yardstick.
+
 ``hard``    everything ``normal`` does, plus it remembers the beaten pile, so
             it knows when one of its cards can no longer be beaten by anybody
             and can lead those to bury a short-handed defender in the endgame;
@@ -23,7 +26,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from .cards import Card, beats, build_deck, card_power
-from .engine import GameView, TableEntry
+from .engine import GameView, TableEntry, Transfer
 from .players import Player
 
 DIFFICULTIES = ("easy", "normal", "hard")
@@ -45,6 +48,10 @@ class Tactics:
     count_cards: bool = False
     # Spot ranks we can't survive being fed, and take early instead.
     trap_aware: bool = False
+    # How much a transfer is worth beyond the card it costs (transfer mode).
+    # Swept like the flags above, but this one came out flat: anything in 0-3
+    # plays the same within noise, so the exact value here is not load bearing.
+    transfer_bonus: int = 3
 
 
 TACTICS = {
@@ -148,20 +155,44 @@ class AIPlayer(Player):
 
     # ------------------------------------------------------------- defending
 
-    def choose_defense(self, view: GameView, attack: Card, legal: Sequence[Card]) -> Optional[Card]:
-        legal = list(legal)
-        if not legal:
+    def choose_defense(self, view, attack, legal=(), transfers=()):
+        legal, transfers = list(legal), list(transfers)
+        if not legal and not transfers:
             return None
         if self.tactics.random_play:
-            if self.rng.random() < 0.1:
+            if transfers and self.rng.random() < 0.5:
+                return Transfer(self.rng.choice(transfers))
+            if not legal or self.rng.random() < 0.1:
                 return None
             return min(legal, key=card_power_for(view.trump_suit))
 
         trump = view.trump_suit
         key = card_power_for(trump)
         plain = [c for c in legal if c.suit != trump]
-        best = min(plain or legal, key=key)
+        best = min(plain or legal, key=key) if legal else None
+
+        if transfers:
+            pass_on = self._best_transfer(view, transfers, best)
+            if pass_on is not None:
+                return Transfer(pass_on)
+        if best is None:
+            return None
         return None if self._should_take(view, attack, best) else best
+
+    def _best_transfer(
+        self, view: GameView, transfers: list[Card], best_block: Optional[Card]
+    ) -> Optional[Card]:
+        """Pick a card to pass the attack on with, or ``None`` to stay and fight.
+
+        Passing costs one card but gets us out of the whole bout, so it wins
+        unless blocking is clearly cheaper — which happens when the only card
+        of the right rank is a trump and we hold a spare low card that beats.
+        """
+        key = card_power_for(view.trump_suit)
+        cheapest = min(transfers, key=key)
+        if best_block is None:
+            return cheapest  # the alternative is picking the table up
+        return cheapest if key(cheapest) <= key(best_block) + self.tactics.transfer_bonus else None
 
     def _should_take(self, view: GameView, attack: Card, defense: Card) -> bool:
         """Sometimes swallowing the table beats spending a card you need."""
@@ -213,8 +244,8 @@ def suggest_move(view: GameView, legal: Sequence[Card], initial: bool) -> Option
     return _advisor(view).choose_attack(view, legal, initial)
 
 
-def suggest_defense(view: GameView, attack: Card, legal: Sequence[Card]) -> Optional[Card]:
-    return _advisor(view).choose_defense(view, attack, legal)
+def suggest_defense(view: GameView, attack: Card, legal: Sequence[Card], transfers: Sequence[Card] = ()):
+    return _advisor(view).choose_defense(view, attack, legal, transfers)
 
 
 __all__ = ["AIPlayer", "DIFFICULTIES", "TACTICS", "Tactics", "suggest_move", "suggest_defense"]

@@ -1,15 +1,22 @@
-"""The Durak rules engine (podkidnoy / "throw-in" durak).
+"""The Durak rules engine.
 
 The engine owns all state and enforces every rule; players are asked for
 decisions through :class:`~durak.players.Player` and can only ever pick from a
 list of legal moves the engine hands them.
+
+Two modes are supported, differing only in what a defender may do:
+
+``classic``   beat every card, or take them all.
+``transfer``  (*perevodnoy*) additionally lets the defender pass the whole
+              attack to the next player by adding a card of the same rank.
+              Throw-ins by the other attackers happen in both modes.
 """
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, NamedTuple, Optional, Sequence
 
 from .cards import Card, beats, shuffled_deck, sort_key
 
@@ -18,6 +25,26 @@ if TYPE_CHECKING:  # pragma: no cover
 
 HAND_SIZE = 6
 MAX_TABLE = 6
+
+CLASSIC = "classic"
+TRANSFER = "transfer"
+MODES = (CLASSIC, TRANSFER)
+
+# What a defender did with the card in front of them.
+BEATEN = "beaten"
+TAKEN = "taken"
+PASSED = "passed"
+
+
+class Transfer(NamedTuple):
+    """A defender's answer meaning "pass this on", not "beat it".
+
+    A card of the attacking rank can sometimes do both — the six of trumps
+    beats the six of hearts *and* is a legal transfer — so the intent has to
+    be stated rather than inferred from the card.
+    """
+
+    card: Card
 
 
 @dataclass
@@ -63,6 +90,8 @@ class GameView:
     players: list[PlayerInfo]
     taken: bool
     log: list[str]
+    mode: str = CLASSIC
+    receiver: Optional[str] = None  # who a transfer would pass the attack to
 
     @property
     def unbeaten(self) -> list[Card]:
@@ -90,6 +119,11 @@ class GameView:
         """True once the deck is gone: cards can no longer be replaced."""
         return self.deck_count == 0
 
+    @property
+    def receiver_hand_count(self) -> int:
+        info = self.info(self.receiver) if self.receiver else None
+        return info.hand_count if info else 0
+
 
 @dataclass
 class GameResult:
@@ -106,7 +140,10 @@ class Durak:
         deck_size: int = 36,
         log_sink: Optional[Callable[[str], None]] = None,
         max_hand: int = HAND_SIZE,
+        mode: str = CLASSIC,
     ) -> None:
+        if mode not in MODES:
+            raise ValueError(f"unknown mode: {mode}")
         if not 2 <= len(players) <= 6:
             raise ValueError("Durak needs between 2 and 6 players")
         if deck_size < len(players) * max_hand + 1:
@@ -115,6 +152,7 @@ class Durak:
                 f"{len(players)} players and still leave a stock"
             )
         self.players = list(players)
+        self.mode = mode
         self.rng = rng or random.Random()
         self.max_hand = max_hand
         self.deck = shuffled_deck(self.rng, deck_size)
@@ -249,6 +287,8 @@ class Durak:
             ],
             taken=self.taken,
             log=list(self.log),
+            mode=self.mode,
+            receiver=self.receiver.name if self.receiver else None,
         )
 
     # ------------------------------------------------------------ legal moves
@@ -266,6 +306,37 @@ class Durak:
     def legal_defenses(self, attack: Card) -> list[Card]:
         return [c for c in self.defender.hand if beats(attack, c, self.trump)]
 
+    @property
+    def receiver(self) -> Optional["PlayerProtocol"]:
+        """The player a transfer would hand the defence to: next one clockwise.
+
+        With two players that is the attacker, who then has to defend what they
+        just played.
+        """
+        if self.mode != TRANSFER:
+            return None
+        seat = self._next_seat(self.defender_seat)
+        return None if seat == self.defender_seat else self.players[seat]
+
+    def legal_transfers(self) -> list[Card]:
+        """Cards the defender may add to pass the whole attack along.
+
+        Only before they have beaten anything — committing a card commits you
+        to the defence — and only onto somebody who holds enough cards to beat
+        everything that would then be in front of them.
+        """
+        receiver = self.receiver
+        if receiver is None or self.taken or not self.table:
+            return []
+        if any(entry.beaten for entry in self.table):
+            return []
+        # Nothing is beaten yet, so every card here is the opening rank; four
+        # of a rank exist, so the table cannot already be at the six card cap.
+        if len(receiver.hand) < len(self.table) + 1:
+            return []
+        rank = self.table[0].attack.rank
+        return [c for c in self.defender.hand if c.rank == rank]
+
     # ------------------------------------------------------------------ bouts
 
     def play_bout(self) -> None:
@@ -279,22 +350,29 @@ class Durak:
         self.say(f"— {attacker.name} attacks {defender.name} —")
 
         passed: set[int] = set()
-        while len(self.table) < self.attack_limit:
+        while True:
+            # A defender facing an unbeaten card must answer it before anybody
+            # may add another. After a transfer there can be several at once.
+            pending = next((i for i, e in enumerate(self.table) if not e.beaten), None)
+            if pending is not None and not self.taken:
+                outcome = self._respond(pending)
+                if outcome == TAKEN:
+                    self.taken = True
+                    self.say(f"{self.defender.name} takes the cards.")
+                elif outcome == PASSED:
+                    passed.clear()
+                continue
+
+            if len(self.table) >= self.attack_limit:
+                break
             played_by, card = self._collect_attack(passed)
             if card is None:
                 break
-
             self.table.append(TableEntry(card))
             played_by.hand.remove(card)
             verb = "attacks with" if len(self.table) == 1 else "adds"
             self.say(f"{played_by.name} {verb} {card.label()}.")
             passed.clear()
-
-            if self.taken:
-                continue
-            if not self._resolve_defense(card):
-                self.taken = True
-                self.say(f"{defender.name} takes the cards.")
 
         self._settle_bout()
 
@@ -321,21 +399,47 @@ class Durak:
             return player, card
         return None, None
 
-    def _resolve_defense(self, attack: Card) -> bool:
-        """Return True if the defender beat ``attack``."""
+    def _respond(self, index: int) -> str:
+        """Ask the defender to deal with the unbeaten card at ``index``."""
         defender = self.defender
+        attack = self.table[index].attack
         legal = self.legal_defenses(attack)
-        if not legal:
-            return False
-        card = defender.choose_defense(self.view_for(defender), attack, legal)
-        if card is None:
-            return False
-        if card not in legal:
-            raise ValueError(f"{defender.name} played an illegal defense: {card}")
-        defender.hand.remove(card)
-        self.table[-1].defense = card
-        self.say(f"{defender.name} beats {attack.label()} with {card.label()}.")
-        return True
+        transfers = self.legal_transfers()
+        if not legal and not transfers:
+            return TAKEN
+
+        move = defender.choose_defense(self.view_for(defender), attack, legal, transfers)
+        if move is None:
+            return TAKEN
+        if isinstance(move, Transfer):
+            if move.card not in transfers:
+                raise ValueError(f"{defender.name} made an illegal transfer: {move.card}")
+            self._pass_the_attack(move.card)
+            return PASSED
+        if move not in legal:
+            raise ValueError(f"{defender.name} played an illegal defense: {move}")
+        defender.hand.remove(move)
+        self.table[index].defense = move
+        self.say(f"{defender.name} beats {attack.label()} with {move.label()}.")
+        return BEATEN
+
+    def _pass_the_attack(self, card: Card) -> None:
+        """Add ``card`` to the table and make the next player the defender."""
+        old_defender = self.defender
+        receiver = self.receiver
+        old_defender.hand.remove(card)
+        self.table.append(TableEntry(card))
+        self.say(
+            f"{old_defender.name} passes the attack to {receiver.name} "
+            f"with {card.label()} — {len(self.table)} cards to beat."
+        )
+        old_seat = self.defender_seat
+        self.defender_seat = self._next_seat(self.defender_seat)
+        if self.attacker_seat == self.defender_seat:
+            # Two players, or the attack has come all the way round: whoever
+            # passed it on becomes the attacker.
+            self.attacker_seat = old_seat
+        self.attack_limit = min(MAX_TABLE, len(self.defender.hand))
 
     def _settle_bout(self) -> None:
         defender = self.defender

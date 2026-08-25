@@ -7,7 +7,7 @@ import random
 import pytest
 
 from durak.cards import Card, beats, build_deck, sort_key
-from durak.engine import Durak, TableEntry
+from durak.engine import CLASSIC, TRANSFER, Durak, TableEntry, Transfer
 from durak.players import Player
 
 S, H, D, C = "S", "H", "D", "C"
@@ -21,25 +21,30 @@ class Scripted(Player):
         self.attacks = list(attacks)
         self.defenses = list(defenses)
         self.observed = []
+        self.offered_transfers = []
 
     def choose_attack(self, view, legal, initial):
         move = self.attacks.pop(0) if self.attacks else None
         assert move is None or move in legal, f"{self.name}: {move} not in {legal}"
         return move
 
-    def choose_defense(self, view, attack, legal):
+    def choose_defense(self, view, attack, legal, transfers=()):
+        self.offered_transfers.append(list(transfers))
         move = self.defenses.pop(0) if self.defenses else None
-        assert move is None or move in legal, f"{self.name}: {move} not in {legal}"
+        if isinstance(move, Transfer):
+            assert move.card in transfers, f"{self.name}: cannot transfer {move.card}"
+        else:
+            assert move is None or move in legal, f"{self.name}: {move} not in {legal}"
         return move
 
     def observe(self, table, taken_by):
         self.observed.append((len(table), taken_by))
 
 
-def make_game(hands, trump=S, stock=(), seat=0):
+def make_game(hands, trump=S, stock=(), seat=0, mode=CLASSIC):
     """Build a game with exact hands, a known trump and a known stock."""
     players = [p for p, _ in hands]
-    game = Durak(players, rng=random.Random(0))
+    game = Durak(players, rng=random.Random(0), mode=mode)
     for player, cards in hands:
         player.hand = list(cards)
     game.deck = list(stock)
@@ -298,3 +303,161 @@ def test_player_count_and_deck_size_are_validated():
         Durak([Scripted("A")])
     with pytest.raises(ValueError):
         Durak([Scripted(str(i)) for i in range(4)], deck_size=20)
+
+
+# ---------------------------------------------------------- transfer mode
+
+
+def transfer_game(hands, **kwargs):
+    return make_game(hands, mode=TRANSFER, **kwargs)
+
+
+def test_classic_mode_never_offers_a_transfer():
+    a = Scripted("A")
+    b = Scripted("B", defenses=[None])
+    game = make_game([(a, [Card(6, H), Card(9, C)]), (b, [Card(6, D), Card(9, D)])])
+    game.table = [TableEntry(Card(6, H))]
+    assert game.receiver is None
+    assert game.legal_transfers() == []
+
+
+def test_a_matching_rank_may_be_passed_on():
+    a = Scripted("A")
+    b = Scripted("B")
+    game = transfer_game([(a, [Card(9, C), Card(10, C)]), (b, [Card(6, D), Card(6, C), Card(9, D)])])
+    game.table = [TableEntry(Card(6, H))]
+    assert game.receiver is a
+    assert set(game.legal_transfers()) == {Card(6, D), Card(6, C)}
+
+
+def test_a_rank_you_do_not_hold_cannot_be_passed_on():
+    a = Scripted("A")
+    b = Scripted("B")
+    game = transfer_game([(a, [Card(9, C), Card(10, C)]), (b, [Card(7, D), Card(9, D)])])
+    game.table = [TableEntry(Card(6, H))]
+    assert game.legal_transfers() == []
+
+
+def test_beating_a_card_gives_up_the_right_to_pass():
+    a = Scripted("A")
+    b = Scripted("B")
+    game = transfer_game([(a, [Card(9, C), Card(10, C)]), (b, [Card(6, D), Card(9, D)])])
+    game.table = [TableEntry(Card(6, H), Card(7, H))]
+    assert game.legal_transfers() == []
+
+
+def test_you_cannot_pass_onto_somebody_who_holds_too_few_cards():
+    a = Scripted("A")
+    b = Scripted("B")
+    # A would have to beat two cards but holds only one.
+    game = transfer_game([(a, [Card(9, C)]), (b, [Card(6, D), Card(9, D)])])
+    game.table = [TableEntry(Card(6, H))]
+    assert game.legal_transfers() == []
+    a.hand.append(Card(10, C))
+    assert game.legal_transfers() == [Card(6, D)]
+
+
+def test_with_two_players_the_attack_comes_straight_back():
+    a = Scripted("A", attacks=[Card(6, H)], defenses=[Card(7, H), Card(7, D)])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    game = transfer_game(
+        [
+            (a, [Card(6, H), Card(7, H), Card(7, D), Card(13, C)]),
+            (b, [Card(6, D), Card(9, C), Card(10, C)]),
+        ]
+    )
+    game.play_bout()
+    # A had to beat both the card they attacked with and the one passed back.
+    assert game.discard == [Card(6, H), Card(7, H), Card(6, D), Card(7, D)]
+    assert a.hand == [Card(13, C)]
+    assert b.hand == [Card(9, C), Card(10, C)]
+    assert game.attacker is a  # A beat everything, so A attacks next
+
+
+def test_the_passer_becomes_the_attacker_in_a_two_player_game():
+    a = Scripted("A", attacks=[Card(6, H)])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    game = transfer_game(
+        [(a, [Card(6, H), Card(9, C), Card(10, C)]), (b, [Card(6, D), Card(9, D), Card(10, D)])]
+    )
+    game._collect_attack(set())  # A opens
+    game.table.append(TableEntry(Card(6, H)))
+    a.hand.remove(Card(6, H))
+    game._respond(0)
+    assert game.defender is a  # the attacker now has to defend
+    assert game.attacker is b  # and the passer is the attacker
+    assert len(game.table) == 2
+
+
+def test_the_defence_rotates_clockwise_with_three_players():
+    a = Scripted("A", attacks=[Card(6, H)])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    c = Scripted("C", defenses=[Card(7, H), Card(7, D)])
+    game = transfer_game(
+        [
+            (a, [Card(6, H), Card(12, C), Card(13, D)]),
+            (b, [Card(6, D), Card(9, C), Card(10, C)]),
+            (c, [Card(7, H), Card(7, D), Card(13, C)]),
+        ]
+    )
+    game.play_bout()
+    # B passed it to C, the next player clockwise, who beat both cards.
+    assert game.discard == [Card(6, H), Card(7, H), Card(6, D), Card(7, D)]
+    assert b.hand == [Card(9, C), Card(10, C)]
+    assert c.hand == [Card(13, C)]
+    assert game.attacker is c
+    # C was offered no transfer on the second card: it had already beaten one.
+    assert c.offered_transfers[-1] == []
+
+
+def test_a_transfer_can_be_passed_on_again():
+    a = Scripted("A", defenses=[None])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    c = Scripted("C", defenses=[Transfer(Card(6, C))])
+    a.attacks = [Card(6, H)]
+    game = transfer_game(
+        [
+            (a, [Card(6, H), Card(12, C), Card(13, D), Card(14, D)]),
+            (b, [Card(6, D), Card(9, C), Card(10, C)]),
+            (c, [Card(6, C), Card(9, D), Card(10, D)]),
+        ]
+    )
+    game.play_bout()
+    # It went A -> B -> C -> A, and A could not beat all three.
+    for card in (Card(6, H), Card(6, D), Card(6, C)):
+        assert card in a.hand
+    assert game.discard == []
+    assert b.hand == [Card(9, C), Card(10, C)]
+    assert c.hand == [Card(9, D), Card(10, D)]
+
+
+def test_the_new_defender_faces_every_card_at_once():
+    a = Scripted("A", attacks=[Card(6, H)])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    game = transfer_game(
+        [
+            (a, [Card(6, H), Card(9, C), Card(10, C)]),
+            (b, [Card(6, D), Card(9, D), Card(10, D)]),
+        ]
+    )
+    game.play_bout()
+    # A cannot beat either six, so A picks both up.
+    assert sorted(a.hand) == sorted([Card(9, C), Card(10, C), Card(6, H), Card(6, D)])
+    assert game.discard == []
+
+
+def test_a_passed_on_bout_is_settled_against_the_final_defender():
+    a = Scripted("A", attacks=[Card(6, H)])
+    b = Scripted("B", defenses=[Transfer(Card(6, D))])
+    c = Scripted("C", defenses=[None])
+    game = transfer_game(
+        [
+            (a, [Card(6, H), Card(12, C), Card(13, D)]),
+            (b, [Card(6, D), Card(9, C), Card(10, C)]),
+            (c, [Card(9, S), Card(10, S), Card(13, C)]),
+        ]
+    )
+    game.play_bout()
+    # C took, so the player after C attacks next.
+    assert Card(6, H) in c.hand and Card(6, D) in c.hand
+    assert game.attacker is a and game.defender is b

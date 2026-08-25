@@ -9,10 +9,30 @@ from typing import Optional, Sequence
 
 from .ai import DIFFICULTIES, AIPlayer
 from .cards import DECK_SIZES
-from .engine import HAND_SIZE, Durak, GameResult
+from .engine import CLASSIC, HAND_SIZE, TRANSFER, Durak, GameResult
 from .players import HumanPlayer, QuitGame
 from .render import Style
 from .ui import TerminalUI
+
+# What the user may type for each mode. "Podkidnoy" and "throw-in" are listed
+# for transfer because that is what many players call it, even though strictly
+# podkidnoy is the throwing-in of matching ranks, which both modes allow, and
+# the transfer variant is perevodnoy.
+MODE_ALIASES = {
+    "classic": CLASSIC,
+    "traditional": CLASSIC,
+    "basic": CLASSIC,
+    "transfer": TRANSFER,
+    "perevodnoy": TRANSFER,
+    "podkidnoy": TRANSFER,
+    "throw-in": TRANSFER,
+    "throwin": TRANSFER,
+}
+
+MODE_BLURB = {
+    CLASSIC: "the defender must beat every card or take them all",
+    TRANSFER: "the defender may also pass the attack on with a matching rank",
+}
 
 BOT_NAMES = [
     "Ivan",
@@ -24,28 +44,60 @@ BOT_NAMES = [
 ]
 
 
+class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Shows defaults, but stays quiet about the options that get asked for."""
+
+    def _get_help_string(self, action):
+        if action.default is None:
+            return action.help
+        return super()._get_help_string(action)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="durak",
         description="Play Durak against the computer in your terminal.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=HelpFormatter,
     )
     parser.add_argument(
         "-p",
         "--players",
         type=int,
-        default=2,
+        default=None,
         choices=range(2, 5),
         metavar="{2,3,4}",
-        help="total number of players, you included",
+        help="total number of players, you included (asked if omitted)",
+    )
+    parser.add_argument(
+        "-o",
+        "--opponents",
+        type=int,
+        default=None,
+        choices=range(1, 4),
+        metavar="{1,2,3}",
+        help="number of computer opponents (an alternative to --players)",
+    )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        type=parse_mode,
+        default=None,
+        metavar="{classic,transfer}",
+        help="classic, or transfer (aka perevodnoy): pass the attack on (asked if omitted)",
     )
     parser.add_argument("-n", "--name", default="You", help="your name at the table")
     parser.add_argument(
         "-d",
         "--difficulty",
-        default="normal",
+        default=None,
         choices=DIFFICULTIES,
-        help="how well the computer opponents play",
+        help="how well the computer opponents play (asked if omitted)",
+    )
+    parser.add_argument(
+        "-y",
+        "--defaults",
+        action="store_true",
+        help="skip the setup questions and use the defaults for anything not given",
     )
     parser.add_argument(
         "--deck",
@@ -85,6 +137,59 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_mode(text: str) -> str:
+    """Accept every name people use for the two modes."""
+    key = text.strip().lower().replace("_", "-").replace(" ", "-")
+    if key not in MODE_ALIASES:
+        raise argparse.ArgumentTypeError(
+            f"unknown mode {text!r}; choose classic or transfer"
+        )
+    return MODE_ALIASES[key]
+
+
+DEFAULTS = {"players": 2, "difficulty": "normal", "mode": CLASSIC}
+
+
+def resolve_table_size(args, parser) -> None:
+    """Settle --players against --opponents; either may be given, not both."""
+    if args.opponents is not None:
+        implied = args.opponents + 1
+        if args.players is not None and args.players != implied:
+            parser.error(
+                f"--players {args.players} and --opponents {args.opponents} disagree; "
+                f"{args.opponents} opponents means {implied} players"
+            )
+        args.players = implied
+
+
+def run_setup(ui: TerminalUI, args) -> None:
+    """Ask about anything the command line did not already settle."""
+    if args.mode is None:
+        args.mode = ui.ask_choice(
+            "Game mode",
+            [
+                (CLASSIC, "Classic", MODE_BLURB[CLASSIC]),
+                (TRANSFER, "Transfer", MODE_BLURB[TRANSFER]),
+            ],
+        )
+    if args.players is None:
+        args.players = ui.ask_choice(
+            "How many opponents?",
+            [(n + 1, f"{n} opponent{'s' if n > 1 else ''}", f"{n + 1} at the table")
+             for n in (1, 2, 3)],
+        )
+    if args.difficulty is None:
+        args.difficulty = ui.ask_choice(
+            "Difficulty",
+            [
+                ("easy", "Easy", "plays more or less at random"),
+                ("normal", "Normal", "sheds cheap cards and hoards trumps"),
+                ("hard", "Hard", "also counts the beaten pile"),
+            ],
+            default=1,
+        )
+
+
 def make_opponents(count: int, difficulty: str, rng: random.Random, taken: str) -> list[AIPlayer]:
     names = [n for n in BOT_NAMES if n.lower() != taken.lower()]
     rng.shuffle(names)
@@ -102,7 +207,9 @@ def play_one_game(args, ui: TerminalUI, rng: random.Random) -> GameResult:
     human = HumanPlayer(args.name, ui)
     bots = make_opponents(args.players - 1, args.difficulty, rng, taken=args.name)
     players = seat_players(human, bots, rng)
-    game = Durak(players, rng=rng, deck_size=args.deck, log_sink=ui.event)
+    game = Durak(
+        players, rng=rng, deck_size=args.deck, log_sink=ui.event, mode=args.mode
+    )
     ui.attach(game, human)
     result = game.run()
     if result.durak:
@@ -119,12 +226,15 @@ def simulate(args, rng: random.Random) -> int:
         players = [
             AIPlayer(f"bot{i + 1}", args.difficulty, rng) for i in range(args.players)
         ]
-        result = Durak(players, rng=rng, deck_size=args.deck).run()
+        result = Durak(players, rng=rng, deck_size=args.deck, mode=args.mode).run()
         if result.durak is None:
             draws += 1
         else:
             tally[result.durak] = tally.get(result.durak, 0) + 1
-    print(f"{args.simulate} games, {args.players} players, difficulty {args.difficulty}")
+    print(
+        f"{args.simulate} games, {args.players} players, "
+        f"difficulty {args.difficulty}, {args.mode} mode"
+    )
     for name in sorted(tally):
         share = 100 * tally[name] / args.simulate
         print(f"  {name}: durak {tally[name]:>5} times ({share:5.1f}%)")
@@ -137,16 +247,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     rng = random.Random(args.seed)
-
-    needed = args.players * HAND_SIZE + 1
-    if args.deck < needed:
-        parser.error(
-            f"--deck {args.deck} is too small for {args.players} players "
-            f"(need at least {needed} cards); try --deck 36"
-        )
-
-    if args.simulate:
-        return simulate(args, rng)
+    resolve_table_size(args, parser)
 
     style = Style.detect(color=False if args.no_color else None, ascii_only=args.ascii)
     ui = TerminalUI(
@@ -155,26 +256,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         clear=not args.no_clear,
         compact=True if args.compact else None,
     )
-    ui.splash(
-        f"{args.players} players · {args.difficulty} opponents · "
-        f"{args.deck} card deck   (? for help once you are in)"
-    )
 
-    played = 0
     try:
+        # Ask about whatever was not given on the command line, unless there is
+        # nobody at the keyboard to ask.
+        if not args.simulate and not args.defaults and sys.stdin.isatty():
+            ui.splash("Set up your game")
+            run_setup(ui, args)
+        for field, value in DEFAULTS.items():
+            if getattr(args, field) is None:
+                setattr(args, field, value)
+
+        needed = args.players * HAND_SIZE + 1
+        if args.deck < needed:
+            parser.error(
+                f"--deck {args.deck} is too small for {args.players} players "
+                f"(need at least {needed} cards); try --deck 36"
+            )
+        if args.simulate:
+            return simulate(args, rng)
+
+        ui.splash(
+            f"{args.players} players · {args.difficulty} opponents · "
+            f"{args.mode} mode · {args.deck} card deck   (? for help once you are in)"
+        )
+
+        played = 0
         while True:
             play_one_game(args, ui, rng)
             played += 1
             if args.rounds and played >= args.rounds:
                 break
-            print()
+            ui.write("\n")
             if not ui.ask_yes_no("Another game?"):
                 break
     except QuitGame:
-        print("\n  Bye.")
+        ui.write("\n  Bye.\n")
         return 0
     except KeyboardInterrupt:  # pragma: no cover
-        print("\n  Bye.")
+        ui.write("\n  Bye.\n")
         return 130
     return 0
 

@@ -10,7 +10,7 @@ from typing import Optional, Sequence
 from . import render
 from .ai import suggest_defense, suggest_move
 from .cards import Card, SUIT_NAMES
-from .engine import GameView
+from .engine import GameView, Transfer
 from .players import QuitGame
 from .render import BOLD, CYAN, DIM, GREEN, RED, YELLOW, Style
 
@@ -29,6 +29,7 @@ SECOND_PERSON = {
     "beats": "beat",
     "takes": "take",
     "picks": "pick",
+    "passes": "pass",
     "holds": "hold",
     "is": "are",
 }
@@ -51,15 +52,27 @@ How to play
   Beat everything and the cards are discarded; take them and the next player
   attacks instead. The last player still holding cards is the durak.
 
+  In TRANSFER mode you have a third option while defending: if you hold a card
+  of the same rank as the card(s) attacking you, and you have not beaten
+  anything yet, you can add it and pass the whole attack to the next player
+  clockwise, who then has to beat all of them. With two players it goes back to
+  your attacker. They can pass it on again if they hold the rank too.
+
 Commands
 --------
   1 2 3 ...   play the card with that number
   d / enter   done attacking (pass the throw-in)
   t           take the cards on the table
+  p / p3      pass the attack on (transfer mode only)
+  b3          beat with card 3, when that card could also pass the attack on
   s           suggest a move
   ?           this help
   q           quit the game
 """
+
+
+def _choices(options: dict) -> str:
+    return ",".join(str(i) for i in sorted(options))
 
 
 class TerminalUI:
@@ -145,7 +158,8 @@ class TerminalUI:
             f"  Trump {self._p(trump, BOLD)}   {stock}   "
             f"beaten pile {view.discard_count}"
         )
-        title = self._p("  D U R A K", BOLD, CYAN)
+        mode = "" if view.mode == "classic" else self._p("  ·  transfer mode", GREEN)
+        title = self._p("  D U R A K", BOLD, CYAN) + mode
         return [title, bar]
 
     def _opponents(self, view: GameView) -> list[str]:
@@ -296,28 +310,72 @@ class TerminalUI:
                 continue
             return card
 
-    def ask_defense(self, view: GameView, attack: Card, legal: list[Card]) -> Optional[Card]:
-        indices = {view.hand.index(card) + 1: card for card in legal}
-        choices = ",".join(str(i) for i in sorted(indices))
-        face = self.style.card_label(attack)
-        note = (
-            f"Beat {face} — pick a card [{choices}] or {self._p('t', BOLD)}=take"
-            + self._p("   (? help, q quit)", DIM)
-        )
+    def ask_defense(self, view, attack, legal, transfers=()):
+        beat_at = {view.hand.index(card) + 1: card for card in legal}
+        pass_at = {view.hand.index(card) + 1: card for card in transfers}
+        note = self._defense_note(view, attack, beat_at, pass_at)
+
         while True:
-            self._prompt(view, legal, note)
+            self._prompt(view, list(legal) + list(transfers), note)
             command = self._read("  > ")
             meta = self._handle_meta(
-                command, view, lambda: suggest_defense(view, attack, legal)
+                command, view, lambda: suggest_defense(view, attack, legal, transfers)
             )
             if meta == "redraw":
                 continue
             if command in ("t", "take", "", "d"):
                 return None
-            card = self._parse_index(command, indices)
+
+            # An explicit b12 / p12 settles a card that could do either.
+            intent, number = command[:1], command[1:].strip()
+            if pass_at and intent == "p":
+                card = self._pick(number, pass_at, "p")
+                if card is not None:
+                    return Transfer(card)
+                continue
+            if intent == "b" and number:
+                card = self._pick(number, beat_at, "b")
+                if card is not None:
+                    return card
+                continue
+
+            card = self._parse_index(command, {**beat_at, **pass_at})
             if card is None:
                 continue
-            return card
+            index = view.hand.index(card) + 1
+            if index in beat_at and index in pass_at:
+                label = self.style.card_label(card)
+                self.status = (
+                    f"{label} can beat it or pass it on — "
+                    f"type b{index} to beat, p{index} to pass."
+                )
+                continue
+            return card if index in beat_at else Transfer(card)
+
+    def _defense_note(self, view: GameView, attack: Card, beat_at: dict, pass_at: dict) -> str:
+        face = self.style.card_label(attack)
+        unbeaten = len(view.unbeaten)
+        target = f"Beat {face}" if unbeaten < 2 else f"Beat {face} ({unbeaten} to beat)"
+        parts = [f"{target} — pick a card [{_choices(beat_at)}]" if beat_at else target]
+        if pass_at:
+            parts.append(
+                f"{self._p('p', BOLD)}=pass to {self._p(view.receiver or '?', CYAN)} "
+                f"[{_choices(pass_at)}]"
+            )
+        parts.append(f"{self._p('t', BOLD)}=take")
+        return ", ".join(parts) + self._p("   (? help, q quit)", DIM)
+
+    def _pick(self, number: str, options: dict, prefix: str):
+        """Resolve the number in a 'b12' / 'p12' style command.
+
+        A bare prefix is enough when there is only one card it could mean.
+        """
+        if not number:
+            if len(options) == 1:
+                return next(iter(options.values()))
+            self.status = f"Which card? Add its number, e.g. {prefix}{min(options)}."
+            return None
+        return self._parse_index(number, options)
 
     def _parse_index(self, command: str, indices: dict[int, Card]) -> Optional[Card]:
         if not command.isdigit():
@@ -355,6 +413,23 @@ class TerminalUI:
             for name, count in sorted(self.scores.items(), key=lambda kv: -kv[1]):
                 lines.append(f"    {render.pad(name, 14)} {count}")
         self.write("\n".join(lines) + "\n")
+
+    def ask_choice(self, question: str, options: list, default: int = 0):
+        """Numbered menu used by the setup screen. ``options`` is (value, name, blurb)."""
+        while True:
+            lines = ["  " + self._p(question, BOLD)]
+            for index, (_, name, blurb) in enumerate(options, start=1):
+                marker = self._p("*", GREEN) if index == default + 1 else " "
+                lines.append(f"   {marker} {index}) {self._p(name, BOLD)} — {blurb}")
+            self.write("\n".join(lines) + "\n")
+            answer = self._read(f"  > [1-{len(options)}, enter for {default + 1}] ")
+            if not answer:
+                return options[default][0]
+            if answer in ("q", "quit", "exit"):
+                raise QuitGame
+            if answer.isdigit() and 1 <= int(answer) <= len(options):
+                return options[int(answer) - 1][0]
+            self.write(self._p(f"  '{answer}' is not one of the options.\n", YELLOW))
 
     def ask_yes_no(self, question: str, default: bool = True) -> bool:
         suffix = "[Y/n]" if default else "[y/N]"
