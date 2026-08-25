@@ -34,10 +34,15 @@ class Card(NamedTuple):
     def rank_name(self) -> str:
         return RANK_NAMES[self.rank]
 
-    def label(self, ascii_only: bool = False) -> str:
-        """Short one-line name, e.g. ``10♦`` or ``10D``."""
+    def label(self, ascii_only: bool = False, ranks: dict | None = None) -> str:
+        """Short one-line name, e.g. ``10♦``, ``10D``, or ``Т♦`` in Russian.
+
+        ``ranks`` overrides the face-card letters (J/Q/K/A) for a language that
+        writes them differently; the number cards are the same everywhere.
+        """
+        name = (ranks or {}).get(self.rank) or RANK_NAMES[self.rank]
         suit = self.suit if ascii_only else SUIT_SYMBOLS[self.suit]
-        return f"{self.rank_name}{suit}"
+        return f"{name}{suit}"
 
     def __str__(self) -> str:  # pragma: no cover - convenience only
         return self.label()

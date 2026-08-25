@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Iterable, NamedTuple, Optional, Sequence
 
 from .cards import Card, beats, card_power, shuffled_deck, sort_key
+from .i18n import Message
 
 if TYPE_CHECKING:  # pragma: no cover
     from .players import Player as PlayerProtocol
@@ -89,7 +90,7 @@ class GameView:
     defender: str
     players: list[PlayerInfo]
     taken: bool
-    log: list[str]
+    log: list[Message]
     mode: str = CLASSIC
     receiver: Optional[str] = None  # who a transfer would pass the attack to
 
@@ -138,7 +139,7 @@ class Durak:
         players: Sequence["PlayerProtocol"],
         rng: Optional[random.Random] = None,
         deck_size: int = 36,
-        log_sink: Optional[Callable[[str], None]] = None,
+        log_sink: Optional[Callable[[Message], None]] = None,
         max_hand: int = HAND_SIZE,
         mode: str = CLASSIC,
     ) -> None:
@@ -157,7 +158,7 @@ class Durak:
         self.max_hand = max_hand
         self.deck = shuffled_deck(self.rng, deck_size)
         self.discard: list[Card] = []
-        self.log: list[str] = []
+        self.log: list[Message] = []
         self.log_sink = log_sink
         self.finished: list["PlayerProtocol"] = []
         self.table: list[TableEntry] = []
@@ -177,7 +178,12 @@ class Durak:
 
     # ------------------------------------------------------------------ setup
 
-    def say(self, message: str) -> None:
+    def say(self, key: str, **params) -> None:
+        """Record something that happened, as an event rather than a sentence.
+
+        The engine has no language: whoever displays the log decides the words.
+        """
+        message = Message(key, params)
         self.log.append(message)
         if self.log_sink:
             self.log_sink(message)
@@ -205,12 +211,12 @@ class Durak:
                 best_seat = seat
         if best_seat is None:
             best_seat = self.rng.randrange(len(self.players))
-            self.say(f"Nobody was dealt a trump — {self.players[best_seat].name} opens.")
+            self.say("no_trump_dealt", actor=self.players[best_seat].name)
         else:
-            card = Card(best_rank, self.trump)
             self.say(
-                f"{self.players[best_seat].name} holds the lowest trump "
-                f"({card.label()}) and attacks first."
+                "first_attacker",
+                actor=self.players[best_seat].name,
+                card=Card(best_rank, self.trump),
             )
         return best_seat
 
@@ -346,8 +352,7 @@ class Durak:
         self.taken = False
         # A defender can never be asked to beat more cards than they hold.
         self.attack_limit = min(MAX_TABLE, len(defender.hand))
-        self.say("")
-        self.say(f"— {attacker.name} attacks {defender.name} —")
+        self.say("bout", actor=attacker.name, target=defender.name)
 
         passed: set[int] = set()
         while True:
@@ -358,7 +363,7 @@ class Durak:
                 outcome = self._respond(pending)
                 if outcome == TAKEN:
                     self.taken = True
-                    self.say(f"{self.defender.name} takes the cards.")
+                    self.say("take", actor=self.defender.name)
                 elif outcome == PASSED:
                     passed.clear()
                 continue
@@ -370,8 +375,8 @@ class Durak:
                 break
             self.table.append(TableEntry(card))
             played_by.hand.remove(card)
-            verb = "attacks with" if len(self.table) == 1 else "adds"
-            self.say(f"{played_by.name} {verb} {card.label()}.")
+            key = "attack" if len(self.table) == 1 else "add"
+            self.say(key, actor=played_by.name, card=card)
             passed.clear()
 
         self._settle_bout()
@@ -421,7 +426,7 @@ class Durak:
             raise ValueError(f"{defender.name} played an illegal defense: {move}")
         defender.hand.remove(move)
         self.table[index].defense = move
-        self.say(f"{defender.name} beats {attack.label()} with {move.label()}.")
+        self.say("beat", actor=defender.name, other=attack, card=move)
         return BEATEN
 
     def _pass_the_attack(self, card: Card) -> None:
@@ -431,8 +436,11 @@ class Durak:
         old_defender.hand.remove(card)
         self.table.append(TableEntry(card))
         self.say(
-            f"{old_defender.name} passes the attack to {receiver.name} "
-            f"with {card.label()} — {len(self.table)} cards to beat."
+            "transfer",
+            actor=old_defender.name,
+            target=receiver.name,
+            card=card,
+            n=len(self.table),
         )
         old_seat = self.defender_seat
         self.defender_seat = self._next_seat(self.defender_seat)
@@ -450,11 +458,11 @@ class Durak:
         if self.taken:
             defender.hand.extend(cards)
             self.sort_hand(defender)
-            self.say(f"{defender.name} picks up {len(cards)} card(s).")
+            self.say("pick_up", actor=defender.name, n=len(cards))
         else:
             self.discard.extend(cards)
             if cards:
-                self.say(f"{defender.name} beat off the attack — {len(cards)} card(s) discarded.")
+                self.say("beat_off", actor=defender.name, n=len(cards))
         self.table = []
 
         self._refill()
@@ -471,7 +479,7 @@ class Durak:
         self.taken = False
         self.attack_limit = min(MAX_TABLE, len(self.defender.hand))
         for name in newly_out:
-            self.say(f"{name} is out of cards and safe.")
+            self.say("out", actor=name)
 
     def _refill(self) -> None:
         """Top hands back up to six, attacker first and defender last."""

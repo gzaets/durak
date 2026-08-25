@@ -3,8 +3,9 @@
 The Russian card game **Durak**, played in a terminal against AI opponents.
 Pure ASCII/ANSI, no graphics, no dependencies — just the standard library.
 
-Single player for now: you plus one to five computer opponents, in either of
-two modes — **classic**, or **transfer**, where a defender can pass the attack
+Plays in **English or Russian** — menus, prompts, the log, the tutorial and the
+face cards all switch together. Single player for now: you plus one to five
+computer opponents, in either of two modes — **classic**, or **transfer**, where a defender can pass the attack
 on to the next player instead of beating it. Multiplayer is not implemented
 yet, but the engine already deals with up to six seats, so adding it later
 means adding a transport, not rewriting the rules.
@@ -97,6 +98,7 @@ durak
 ## Options
 
 ```
+-l, --lang {en,ru}      interface language          (default: from your locale)
 -o, --opponents {1..5}  number of computer opponents       (asked if omitted)
 -p, --players {2..6}    total players, you included        (same thing, +1)
 -m, --mode MODE         classic | transfer                 (asked if omitted)
@@ -104,6 +106,7 @@ durak
 -d, --difficulty        easy | normal | hard               (asked if omitted)
 -y, --defaults          skip the menu and setup questions
     --tutorial          print the rules and history, then exit
+    --languages         list the available interface languages, then exit
     --deck {20,24,36,52}  deck size            (default 36, or 52 for six)
     --seed N            reproducible shuffle
     --speed SECONDS     pause per opponent move, 0 = instant  (default 0.6)
@@ -118,6 +121,7 @@ durak
 Some combinations worth knowing:
 
 ```sh
+durak -l ru                 # играть по-русски
 durak -o 5 -d hard -m transfer   # a full table of six, strongest bots, transfer mode
 durak -p 4 -d hard          # four players, the strongest bots
 durak --ascii --no-color    # for a terminal with no Unicode or colour
@@ -150,6 +154,58 @@ mode a playable trump is cyan where a playable plain card is green; in
 `b3` / `p3` exist because one card can sometimes do both: if the six of hearts
 is attacking you and trumps are spades, your six of spades *beats* it and is
 *also* a legal transfer. The prompt asks which you meant only in that case.
+
+## Languages
+
+`--lang ru` (or the *Язык* item in the menu, at any time) switches everything:
+
+```
+  Д У Р А К  ·  с переводом
+  Козырь ♠ Пики   колода: 18 (нижняя карта 9♠)   отбой: 0
+
+  Игроки
+  [D] Люба       6 ▨▨▨▨▨▨  защищается
+  [+] Надя       6 ▨▨▨▨▨▨  может подкинуть
+  [A] Вы (вы)    6 ▨▨▨▨▨▨  атакует
+
+  Ход игры
+    Младший козырь (7♠) у вас. Ваш ход первый.
+    Люба отбивается — в отбой: 4 карты.
+
+  Ваш ход. Защищается: Люба — выберите карту [1,2,3,4,5,6]   (? справка, q выход)
+```
+
+Face cards are written **В Д К Т** (валет, дама, король, туз), the opponents
+get Russian names, and the tutorial has its own Russian text rather than a
+machine rendering of the English. With no `--lang`, the language is taken from
+`DURAK_LANG`, `LC_ALL`, `LC_MESSAGES` or `LANG`, falling back to English.
+
+Two details worth knowing:
+
+- **Keys stay Latin.** The prompt reads `t=взять`, `p=перевод`, so `t` and `p`
+  are still what you press; the spelled-out Russian words work too. An earlier
+  version accepted `в` for both *взять* and *выход*, which meant taking cards
+  quit the game — there is now a test that no two command sets overlap.
+- **`--ascii` transliterates.** A terminal that cannot show Cyrillic gets
+  `Kozyr S Piki` rather than a row of question marks, and face cards fall back
+  to J/Q/K/A.
+
+### Adding a language
+
+Everything translatable lives in `durak/i18n.py`: one `STRINGS` entry per
+language, plus the plural rules, card letters and opponent names. The engine
+emits events (`Message("pick_up", {"actor": ..., "n": 3})`) rather than
+sentences, so no rule code needs touching. Tests check that every language
+defines every key, takes the same placeholders, and leaves nothing in English.
+
+The Russian is written so **player names always stay in the nominative** —
+Russian would otherwise want *переводит на Ивана* (accusative) and *у Ольги*
+(genitive), which needs a declension table and a gender for every name,
+impossible for a name the player types in. Strings label names instead
+(*Защищается: Ольга*), and verbs are present tense because the past agrees with
+gender (*взял* / *взяла*) while the present does not (*берёт*). Counted nouns
+have both an accusative and a nominative form, since *забирает 1 карту* and
+*на столе 1 карта* differ.
 
 ## The rules, as implemented
 
@@ -235,7 +291,8 @@ durak/ai.py        the computer opponents
 durak/ui.py        board drawing and input parsing
 durak/render.py    ASCII/ANSI primitives — knows nothing about Durak
 durak/cli.py       argument parsing, the menu, and the match loop
-durak/tutorial.py  the in-game rules-and-history text
+durak/i18n.py      every string the player reads, in every language
+durak/tutorial.py  the in-game rules-and-history text, per language
 ```
 
 The engine never reads from the terminal and the UI never enforces a rule, so
@@ -248,7 +305,7 @@ pip install -e '.[dev]'
 python3 -m pytest
 ```
 
-178 tests covering the card rules in both modes, tables of two through six, bout resolution and transfers,
+238 tests covering the card rules in both modes, tables of two through six, bout resolution and transfers,
 drawing and elimination, the AI's tactics and relative strength, rendering and
 trump colouring, input parsing, and the menu. The AI strength tests play
 thousands of hands but use fixed seeds, so they are deterministic rather than

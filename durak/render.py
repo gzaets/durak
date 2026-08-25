@@ -74,11 +74,17 @@ class Style:
     """
 
     def __init__(
-        self, color: bool = True, ascii_only: bool = False, trump: str | None = None
+        self,
+        color: bool = True,
+        ascii_only: bool = False,
+        trump: str | None = None,
+        ranks: dict | None = None,
     ) -> None:
         self.color = color
         self.ascii_only = ascii_only
         self.trump = trump
+        # Face-card letters for the current language; None means J/Q/K/A.
+        self.ranks = ranks
 
     @classmethod
     def detect(cls, color: bool | None = None, ascii_only: bool = False) -> "Style":
@@ -88,6 +94,19 @@ class Style:
 
     def set_trump(self, suit: str | None) -> None:
         self.trump = suit
+
+    def fit(self, text: str) -> str:
+        """Text as it will actually be printed, for anything width-sensitive.
+
+        write() transliterates at the last moment, which changes how wide a
+        string is ("Люба" becomes "Lyuba"). Anything that gets padded into a
+        column has to be converted before its width is measured.
+        """
+        return to_ascii(text) if self.ascii_only else text
+
+    def rank_text(self, card: Card) -> str:
+        """The rank as written in the current language."""
+        return (self.ranks or {}).get(card.rank) or card.rank_name
 
     def is_trump(self, card: Card) -> bool:
         return self.trump is not None and card.suit == self.trump
@@ -112,7 +131,7 @@ class Style:
 
     def card_label(self, card: Card) -> str:
         """One-line name, cyan when it is a trump."""
-        text = card.label(self.ascii_only)
+        text = card.label(self.ascii_only, self.ranks)
         if self.is_trump(card):
             return self.paint(text, CYAN, BOLD)
         return self.paint(text, self.pip_code(card))
@@ -143,7 +162,7 @@ def card_art(card: Card, style: Style) -> list[str]:
     in cyan while its rank and suit keep the usual red or black.
     """
     inner = CARD_WIDTH - 2
-    rank = card.rank_name
+    rank = style.rank_text(card)
     rows = (rank.ljust(inner), style.suit(card.suit).center(inner), rank.rjust(inner))
     if not style.color:
         return _box(style, *rows)

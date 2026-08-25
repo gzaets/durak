@@ -1,12 +1,14 @@
-"""The in-game tutorial: what Durak is, where it comes from, and how to play.
+"""The in-game tutorial and help, in every language the game speaks.
 
-Kept as plain text with a couple of drawn examples rather than generated art,
-so it reads the same in --ascii mode and in a narrow terminal.
+Plain text with a couple of drawn examples rather than generated art, so it
+reads the same in --ascii mode and in a narrow terminal.
 """
 
 from __future__ import annotations
 
-HISTORY = """\
+from .i18n import ENGLISH, RUSSIAN
+
+EN_HISTORY = """\
 A little history
 ================
 
@@ -30,7 +32,7 @@ A little history
   not to be last.
 """
 
-BASICS = """\
+EN_BASICS = """\
 The basics
 ==========
 
@@ -46,7 +48,7 @@ The basics
   Whoever holds the lowest trump attacks first.
 """
 
-BEATING = """\
+EN_BEATING = """\
 Beating a card
 ==============
 
@@ -71,7 +73,7 @@ Beating a card
   into your hand, including any you had already beaten this round.
 """
 
-THROWING_IN = """\
+EN_THROWING_IN = """\
 Throwing in
 ===========
 
@@ -83,7 +85,7 @@ Throwing in
       may add: any 6, or any 10
       may not: anything else
 
-  In a game of three or four, every other player gets to throw in too, not
+  In a game of three or more, every other player gets to throw in too, not
   just the player who attacked. A round stops at six cards, and never has
   more cards than the defender held when it began.
 
@@ -91,7 +93,7 @@ Throwing in
   Take them and the turn passes you by.
 """
 
-TRANSFER = """\
+EN_TRANSFER = """\
 Transfer mode
 =============
 
@@ -111,7 +113,7 @@ Transfer mode
   cannot pass onto somebody holding fewer cards than they would have to beat.
 """
 
-ENDING = """\
+EN_ENDING = """\
 How it ends
 ===========
 
@@ -123,7 +125,7 @@ How it ends
   out together, it is a draw.
 """
 
-PLAYING = """\
+EN_PLAYING = """\
 Playing this version
 ====================
 
@@ -145,9 +147,229 @@ Playing this version
   avoid it.
 """
 
-SECTIONS = (HISTORY, BASICS, BEATING, THROWING_IN, TRANSFER, ENDING, PLAYING)
+RU_HISTORY = """\
+Немного истории
+===============
+
+  Слово «дурак» и дало игре имя: победителя здесь, по сути, нет — есть
+  только проигравший. Игра идёт до тех пор, пока у всех, кроме одного, не
+  закончатся карты. Тот, кто остался с картами на руках, и есть дурак.
+  Обходятся с ним не слишком любезно: во многих домах дурак раздаёт
+  следующую партию, и подшучивают над ним, пока кто-нибудь другой не займёт
+  его место.
+
+  Это самая популярная карточная игра в России и на всём постсоветском
+  пространстве — из тех, которым учатся дома, а не по книжке правил. Отсюда
+  и множество вариантов: в каждой семье играют немного по-своему, и правила
+  ниже — один из распространённых вариантов, а не единственно верный.
+
+  Дурак относится к семейству так называемых «игр с побитием», где игроки
+  отвечают на карты друг друга напрямую, а не собирают взятки. Среди
+  карточных игр он необычен тем, что в нём вообще нет очков, и тем, что цель
+  перевёрнута: вы стараетесь не выиграть, а не остаться последним.
+"""
+
+RU_BASICS = """\
+Основы
+======
+
+  В колоде 36 карт: 6, 7, 8, 9, 10, В, Д, К, Т каждой масти. Каждому
+  раздаётся шесть. Остальные образуют колоду, а нижняя карта колоды
+  открывается — её масть становится КОЗЫРЕМ на всю партию, и эта карта
+  достанется кому-то самой последней.
+
+  Козырь бьёт любую карту другой масти, поэтому козыри стоит беречь. В этой
+  игре они обведены голубым и стоят в самом ЛЕВОМ краю вашей руки, так что
+  всегда находятся на одном и том же месте.
+
+  Первым ходит тот, у кого младший козырь.
+"""
+
+RU_BEATING = """\
+Как бить карту
+==============
+
+  Атакующий кладёт карту. Вы, защищаясь, обязаны побить её:
+
+    * СТАРШЕЙ картой ТОЙ ЖЕ масти, либо
+    * ЛЮБЫМ козырем (если атакующая карта сама не козырь).
+
+  Козырь бьётся только более старшим козырем. Карта другой некозырной масти
+  не бьёт ничего.
+
+  Допустим, козыри — пики, а ходят девяткой червей:
+
+      атакуют 9♥
+      ───────────────────────────────────
+      10♥  бьёт      (та же масть, старше)
+       7♠  бьёт      (козырь)
+       8♥  не бьёт   (та же масть, но младше)
+       Т♦  не бьёт   (другая некозырная масть — туз тут не поможет)
+
+  Если побить нечем или не хочется — вы БЕРЁТЕ: все карты со стола уходят к
+  вам в руку, включая те, которые вы уже успели побить в этом кругу.
+"""
+
+RU_THROWING_IN = """\
+Подкидывание
+============
+
+  Как только на столе появилась карта, атакующие могут подкидывать ещё — но
+  только карты того ДОСТОИНСТВА, которое уже есть на столе, с любой стороны.
+
+      на столе:  6♥ побита 10♥
+      ───────────────────────────────────
+      можно:     любую шестёрку или любую десятку
+      нельзя:    всё остальное
+
+  Втроём и больше подкидывать могут все, а не только тот, кто ходил. В одном
+  кругу не бывает больше шести карт, и никогда больше, чем было на руках у
+  защищающегося в начале круга.
+
+  Отбились — карты уходят в отбой навсегда, и следующий ход ваш. Взяли —
+  ход переходит мимо вас.
+"""
+
+RU_TRANSFER = """\
+Режим с переводом
+=================
+
+  Необязательное правило, выбирается в начале. Пока вы ещё ничего не побили,
+  если у вас есть карта ТОГО ЖЕ ДОСТОИНСТВА, что и карта, которой вас
+  атакуют, вы можете подложить её и перевести всю атаку на следующего игрока
+  по часовой стрелке:
+
+      вам сходили 6♠, а у вас есть 6♦
+      ───────────────────────────────────
+      кладёте 6♦ — и обе шестёрки уходят следующему игроку,
+      которому теперь надо отбить ДВЕ карты
+
+  Он может перевести дальше, если у него тоже есть такая карта. Вдвоём атака
+  возвращается к тому, кто ходил: теперь ему бить то, чем он только что
+  пошёл.
+
+  Два ограничения: перевести нельзя, если вы уже побили карту в этом кругу,
+  и нельзя переводить на того, у кого карт меньше, чем ему придётся бить.
+"""
+
+RU_ENDING = """\
+Чем всё кончается
+=================
+
+  После каждого круга все добирают до шести карт — сначала атакующий,
+  защищающийся последним, — пока колода не кончится. Когда она пуста, добирать
+  больше нечего, и тот, кто сыграл последнюю карту, выходит из игры.
+
+  Последний, у кого остались карты, и есть ДУРАК. Если последние игроки
+  выходят одновременно — ничья.
+"""
+
+RU_PLAYING = """\
+Как играть в этой версии
+========================
+
+  Ваши карты пронумерованы: наберите номер, чтобы сходить этой картой. Карты,
+  которыми сейчас ходить нельзя, показаны тускло и без номера — значит, любая
+  карта с номером является допустимым ходом.
+
+    1 2 3 ...   сходить картой с этим номером
+    d, Enter    хватит подкидывать
+    t           взять карты со стола
+    p, p3       перевести атаку            (только в режиме с переводом)
+    b3          побить картой 3, если ею же можно и перевести
+    s           подсказка
+    ?           эта справка
+    q           выход
+
+  Небольшой совет: взять карты — не всегда поражение. Иногда проглотить одну
+  мелкую карту в начале куда выгоднее, чем тратить на неё козырного туза.
+"""
+
+SECTIONS = {
+    ENGLISH: (
+        EN_HISTORY,
+        EN_BASICS,
+        EN_BEATING,
+        EN_THROWING_IN,
+        EN_TRANSFER,
+        EN_ENDING,
+        EN_PLAYING,
+    ),
+    RUSSIAN: (
+        RU_HISTORY,
+        RU_BASICS,
+        RU_BEATING,
+        RU_THROWING_IN,
+        RU_TRANSFER,
+        RU_ENDING,
+        RU_PLAYING,
+    ),
+}
+
+HELP = {
+    ENGLISH: """
+How to play
+-----------
+  Beat the attacking card with a higher card of the SAME suit, or with any
+  trump. A trump can only be beaten by a bigger trump.
+  Attackers may keep throwing in cards whose rank already appears on the
+  table, up to six cards or the number the defender started with.
+  Beat everything and the cards are discarded; take them and the next player
+  attacks instead. The last player still holding cards is the durak.
+
+  In TRANSFER mode you have a third option while defending: if you hold a card
+  of the same rank as the card(s) attacking you, and you have not beaten
+  anything yet, you can add it and pass the whole attack to the next player
+  clockwise. With two players it goes back to your attacker.
+
+Commands
+--------
+  1 2 3 ...   play the card with that number
+  d / enter   done attacking (pass the throw-in)
+  t           take the cards on the table
+  p / p3      pass the attack on (transfer mode only)
+  b3          beat with card 3, when that card could also pass the attack on
+  s           suggest a move
+  ?           this help
+  q           quit the game
+""",
+    RUSSIAN: """
+Как играть
+----------
+  Побейте атакующую карту старшей картой ТОЙ ЖЕ масти или любым козырем.
+  Козырь бьётся только более старшим козырем.
+  Атакующие могут подкидывать карты того достоинства, которое уже есть на
+  столе — до шести карт и не больше, чем было на руках у защищающегося.
+  Отбились — карты уходят в отбой; взяли — ход переходит к следующему.
+  Последний, у кого остались карты, и есть дурак.
+
+  В режиме С ПЕРЕВОДОМ у защищающегося есть третий вариант: если у вас есть
+  карта того же достоинства, что и атакующая, и вы ещё ничего не побили,
+  можно подложить её и перевести всю атаку на следующего игрока. Вдвоём
+  атака возвращается к тому, кто ходил.
+
+Команды
+-------
+  1 2 3 ...   сходить картой с этим номером
+  d / Enter   хватит подкидывать
+  t           взять карты со стола
+  p / p3      перевести атаку (только в режиме с переводом)
+  b3          побить картой 3, если ею же можно и перевести
+  s           подсказка
+  ?           эта справка
+  q           выход
+""",
+}
 
 
-def text() -> str:
+def sections(lang: str = ENGLISH) -> tuple:
+    return SECTIONS[lang]
+
+
+def help_text(lang: str = ENGLISH) -> str:
+    return HELP[lang]
+
+
+def text(lang: str = ENGLISH) -> str:
     """The whole tutorial as one string."""
-    return "\n".join(SECTIONS)
+    return "\n".join(SECTIONS[lang])

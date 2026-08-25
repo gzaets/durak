@@ -11,6 +11,7 @@ from durak import cli, render, tutorial
 from durak.ai import AIPlayer
 from durak.cards import Card
 from durak.engine import Durak, TableEntry, Transfer
+from durak.i18n import Message, Translator
 from durak.players import QuitGame
 from durak.render import Style
 from durak.ui import TerminalUI
@@ -197,10 +198,10 @@ def test_help_and_hints_redraw_without_consuming_the_turn():
 
 def test_second_person_fixes_the_log_grammar():
     ui = ScriptedUI([])
-    assert ui._second_person("You takes the cards.", "You") == "You take the cards."
-    assert ui._second_person("Ivan takes the cards.", "You") == "Ivan takes the cards."
-    # A real name is already correct in the third person.
-    assert ui._second_person("Sam takes the cards.", "Sam") == "Sam takes the cards."
+    take = Message("take", {"actor": "Sam"})
+    assert ui.say(take, you="Sam") == "You take the cards."
+    assert ui.say(take, you="Ivan") == "Sam takes the cards."
+    assert ui.say(take) == "Sam takes the cards."
 
 
 # --------------------------------------------------------------------- cli
@@ -514,18 +515,20 @@ def test_cyrillic_survives_ascii_mode():
 
 
 def test_the_tutorial_covers_the_rules_it_needs_to():
-    body = tutorial.text().lower()
+    body = tutorial.text("en").lower()
     for topic in ("trump", "beat", "throw", "transfer", "durak", "history"):
         assert topic in body
 
 
 def test_the_tutorial_is_paged_rather_than_dumped():
-    assert len(tutorial.SECTIONS) > 1
-    assert all(section.strip() for section in tutorial.SECTIONS)
+    for lang in ("en", "ru"):
+        assert len(tutorial.sections(lang)) > 1
+        assert all(section.strip() for section in tutorial.sections(lang))
 
 
 def test_the_tutorial_survives_ascii_mode():
-    assert render.to_ascii(tutorial.text()).isascii()
+    for lang in ("en", "ru"):
+        assert render.to_ascii(tutorial.text(lang)).isascii()
 
 
 def test_the_tutorial_flag_prints_and_exits(capsys):
@@ -557,7 +560,8 @@ def test_the_menu_quits():
 
 def test_the_menu_shows_the_tutorial_then_comes_back():
     # 2 = how to play, then page through, then 1 = play.
-    ui = ScriptedUI(["2"] + [""] * len(tutorial.SECTIONS) + ["1"])
+    pages = len(tutorial.sections("en"))
+    ui = ScriptedUI(["2"] + [""] * pages + ["1"])
     cli.main_menu(ui)
     assert not ui.commands
 
@@ -601,8 +605,9 @@ def test_there_is_always_a_spare_name_for_a_full_table():
 
 
 def test_six_players_are_told_which_deck_they_need():
-    assert "52" in cli._table_blurb(6)
-    assert "52" not in cli._table_blurb(4)
+    t = Translator("en")
+    assert "52" in cli._table_blurb(6, t)
+    assert "52" not in cli._table_blurb(4, t)
 
 
 def test_a_deck_too_small_for_six_names_the_one_that_works(capsys):
@@ -638,3 +643,176 @@ def test_a_whole_big_table_game_can_be_played_through_stdin(
     out = capsys.readouterr().out
     assert code == 0
     assert "DURAK" in out and "Bouts played:" in out
+
+
+# ---------------------------------------------------------------- language
+
+
+def test_the_lang_flag_switches_the_whole_interface():
+    ui = ScriptedUI([], lang="ru")
+    assert ui.t("title") == "Д У Р А К"
+    assert ui.lang == "ru"
+
+
+def test_the_language_can_be_switched_at_runtime():
+    ui = ScriptedUI([])
+    assert ui.t("menu_play") == "Play"
+    ui.set_language("ru")
+    assert ui.t("menu_play") == "Играть"
+    # Face cards follow the language too.
+    assert ui.style.card_label(Card(14, S)) == "Т♠"
+
+
+def test_switching_to_ascii_keeps_latin_face_cards():
+    ui = ScriptedUI([], style=Style(color=False, ascii_only=True), lang="ru")
+    assert ui.style.card_label(Card(14, S)) == "AS"
+
+
+def test_the_board_is_drawn_in_russian():
+    ui = ScriptedUI([], lang="ru")
+    view = a_view([Card(6, H)])
+    assert "Козырь" in "".join(ui._header(view))
+    assert "Игроки" in "".join(ui._opponents(view))
+    assert "Стол" in "".join(ui._table(view))
+    assert "Ваши карты" in "".join(ui._hand(view))
+
+
+def test_the_defence_prompt_is_in_russian():
+    hand = [Card(6, D), Card(10, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))], receiver="Надя")
+    ui = ScriptedUI(["t"], lang="ru")
+    ui.ask_defense(view, Card(6, H), [], [Card(6, D)])
+    assert "перевод" in ui.last_note and "Надя" in ui.last_note
+    assert "взять" in ui.last_note
+
+
+def test_the_take_key_is_not_swallowed_by_the_pass_key():
+    """'p' means "no more throw-ins" when attacking and "pass it on" when not."""
+    hand = [Card(6, D), Card(10, C)]
+    view = transfer_view(hand, [TableEntry(Card(6, H))])
+    assert ScriptedUI(["p"]).ask_defense(view, Card(6, H), [], [Card(6, D)]) == Transfer(
+        Card(6, D)
+    )
+    # And it still ends a throw-in at an attack prompt.
+    plain = a_view(hand, table=[TableEntry(Card(6, S))])
+    assert ScriptedUI(["p"]).ask_attack(plain, [Card(6, D)], initial=False) is None
+
+
+def test_no_command_word_means_two_different_things():
+    from durak import i18n
+
+    sets = {
+        "quit": i18n.QUIT_WORDS,
+        "take": i18n.TAKE_WORDS,
+        "help": i18n.HELP_WORDS,
+        "hint": i18n.HINT_WORDS,
+        "yes": i18n.YES_WORDS,
+        "no": i18n.NO_WORDS,
+    }
+    for name, words in sets.items():
+        for other, others in sets.items():
+            if name >= other:
+                continue
+            clash = words & others
+            assert not clash, f"{name} and {other} both claim {clash}"
+
+
+def test_russian_yes_and_no_are_understood():
+    assert ScriptedUI(["да"]).ask_yes_no("?") is True
+    assert ScriptedUI(["нет"]).ask_yes_no("?") is False
+    assert ScriptedUI(["y"]).ask_yes_no("?") is True
+
+
+def test_the_menu_offers_a_language_choice():
+    # 3 = language, 2 = Русский, then 1 = play.
+    ui = ScriptedUI(["3", "2", "1"])
+    cli.main_menu(ui)
+    assert ui.lang == "ru"
+    assert not ui.commands
+
+
+def test_choosing_a_language_leaves_the_menu_in_that_language():
+    ui = ScriptedUI(["3", "2", "4"])
+    with pytest.raises(QuitGame):
+        cli.main_menu(ui)
+    assert ui.lang == "ru"
+
+
+def test_the_locale_picks_the_language_when_no_flag_is_given(monkeypatch, capsys):
+    monkeypatch.setenv("LANG", "ru_RU.UTF-8")
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("DURAK_LANG", raising=False)
+    assert cli.main(["--tutorial"]) == 0
+    assert "козыр" in capsys.readouterr().out.lower()
+
+
+def test_an_explicit_flag_beats_the_locale(monkeypatch, capsys):
+    monkeypatch.setenv("LANG", "ru_RU.UTF-8")
+    assert cli.main(["--tutorial", "--lang", "en"]) == 0
+    assert "Trump" in capsys.readouterr().out
+
+
+def test_the_languages_can_be_listed(capsys):
+    assert cli.main(["--languages"]) == 0
+    out = capsys.readouterr().out
+    assert "en" in out and "ru" in out and "Русский" in out
+
+
+def test_your_default_name_matches_the_language(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n\n" * 400))
+    assert cli.main(
+        ["-y", "-l", "ru", "--rounds", "1", "--speed", "0",
+         "--no-clear", "--no-color", "--seed", "5"]
+    ) == 0
+    assert "Вы" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_a_whole_game_can_be_played_in_either_language(monkeypatch, capsys, lang):
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n\n" * 3000))
+    code = cli.main(
+        ["-y", "--lang", lang, "--players", "3", "--mode", "transfer",
+         "--rounds", "1", "--speed", "0", "--no-clear", "--no-color", "--seed", "4"]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert ("ДУРАК" if lang == "ru" else "DURAK") in out
+
+
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_ascii_mode_stays_ascii_in_either_language(monkeypatch, capsys, lang):
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n\n" * 3000))
+    cli.main(
+        ["-y", "--lang", lang, "--ascii", "--players", "3", "--rounds", "1",
+         "--speed", "0", "--no-clear", "--no-color", "--seed", "6"]
+    )
+    assert capsys.readouterr().out.isascii()
+
+
+def test_names_line_up_in_ascii_mode_even_when_transliterated():
+    """'Люба' becomes 'Lyuba', so padding must happen after transliteration."""
+    ui = ScriptedUI([], style=Style(color=False, ascii_only=True), lang="ru")
+    view = a_view([Card(6, H)])
+    view.players[0].name = "Люба"
+    view.players[1].name = "Вы"
+    rows = [render.to_ascii(row) for row in ui._opponents(view)[1:]]
+    # The pip block starts right after the padded name; it must be flush.
+    columns = [row.index("#") for row in rows]
+    assert len(set(columns)) == 1, rows
+
+
+def test_the_winner_gets_a_crown_and_the_durak_gets_the_fool():
+    from durak.engine import GameResult
+    from durak.ui import CROWN_ART, FOOL_ART
+
+    def ending(durak):
+        ui = ScriptedUI([])
+        ui.human = AIPlayer("You", "normal")
+        shown = []
+        ui.write = lambda text: shown.append(text)
+        ui.announce(GameResult(durak=durak, bouts=5))
+        return "".join(shown)
+
+    assert CROWN_ART in ending("Ivan") and FOOL_ART not in ending("Ivan")
+    assert FOOL_ART in ending("You") and CROWN_ART not in ending("You")
+    assert CROWN_ART in ending(None)  # a draw is not a loss

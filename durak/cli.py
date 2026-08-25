@@ -10,8 +10,15 @@ from typing import Optional, Sequence
 from .ai import DIFFICULTIES, AIPlayer
 from .cards import DECK_SIZES
 from .engine import CLASSIC, HAND_SIZE, TRANSFER, Durak, GameResult
+from .i18n import (
+    LANGUAGE_NAMES,
+    LANGUAGES,
+    Translator,
+    detect_language,
+    players_noun,
+)
 from .players import HumanPlayer, QuitGame
-from .tutorial import SECTIONS as TUTORIAL_SECTIONS, text as tutorial_text
+from .tutorial import sections as tutorial_sections, text as tutorial_text
 from .render import Style
 from .ui import TerminalUI
 
@@ -30,23 +37,11 @@ MODE_ALIASES = {
     "throwin": TRANSFER,
 }
 
-MODE_BLURB = {
-    CLASSIC: "the defender must beat every card or take them all",
-    TRANSFER: "the defender may also pass the attack on with a matching rank",
-}
+# Mode and difficulty labels are translated; these map each value to its keys.
+MODE_KEYS = {CLASSIC: "mode_classic", TRANSFER: "mode_transfer"}
 
-# One more than the largest table, so there is always a spare when the player
-# takes one of these names for themselves.
-BOT_NAMES = [
-    "Ivan",
-    "Olga",
-    "Pyotr",
-    "Nadya",
-    "Grisha",
-    "Vera",
-    "Lyuba",
-    "Misha",
-]
+# Bot names live in durak.i18n, one list per language — one more name than the
+# largest table, so there is always a spare when the player takes one.
 
 
 class HelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -90,7 +85,19 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{classic,transfer}",
         help="classic, or transfer (aka perevodnoy): pass the attack on (asked if omitted)",
     )
-    parser.add_argument("-n", "--name", default="You", help="your name at the table")
+    parser.add_argument(
+        "-l",
+        "--lang",
+        default=None,
+        choices=LANGUAGES,
+        help="interface language (default: from your locale, else en)",
+    )
+    parser.add_argument(
+        "-n",
+        "--name",
+        default=None,
+        help="your name at the table (default: You / Вы)",
+    )
     parser.add_argument(
         "-d",
         "--difficulty",
@@ -102,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--tutorial",
         action="store_true",
         help="print the rules and history, then exit",
+    )
+    parser.add_argument(
+        "--languages",
+        action="store_true",
+        help="list the available interface languages, then exit",
     )
     parser.add_argument(
         "-y",
@@ -172,58 +184,68 @@ def resolve_table_size(args, parser) -> None:
         args.players = implied
 
 
-def _table_blurb(players: int) -> str:
+def _table_blurb(players: int, t) -> str:
     """What a given table size means, mentioning the bigger deck when it applies."""
     deck = default_deck_for(players)
-    seats = f"{players} at the table"
-    return seats if deck == DEFAULT_DECK else f"{seats}, dealt from {deck} cards"
+    if deck == DEFAULT_DECK:
+        return t("seats", n=players)
+    return t("seats_deck", n=players, deck=deck)
+
+
+def ask_language(ui: TerminalUI) -> str:
+    """Offer the languages, each written in its own language."""
+    return ui.ask_choice(
+        ui.t("setup_language"),
+        [(code, LANGUAGE_NAMES[code], "") for code in LANGUAGES],
+        default=LANGUAGES.index(ui.lang),
+    )
 
 
 def main_menu(ui: TerminalUI) -> None:
     """Show the front menu until the player chooses to start a game."""
     while True:
+        t = ui.t
         choice = ui.ask_choice(
-            "Durak",
+            t("menu_title"),
             [
-                ("play", "Play", "set up a game and deal"),
-                ("learn", "How to play", "the rules, and where the game comes from"),
-                ("quit", "Quit", "leave"),
+                ("play", t("menu_play"), t("menu_play_blurb")),
+                ("learn", t("menu_learn"), t("menu_learn_blurb")),
+                ("lang", t("menu_language"), t("menu_language_blurb")),
+                ("quit", t("menu_quit"), t("menu_quit_blurb")),
             ],
         )
         if choice == "play":
             return
         if choice == "quit":
             raise QuitGame
-        ui.show_pages(TUTORIAL_SECTIONS, footer="That is all of it — good luck.")
+        if choice == "lang":
+            ui.set_language(ask_language(ui))
+            ui.splash(ui.t("tagline"))
+            continue
+        ui.show_pages(tutorial_sections(ui.lang), footer=ui.t("tutorial_end"))
 
 
 def run_setup(ui: TerminalUI, args) -> None:
     """Ask about anything the command line did not already settle."""
+    t = ui.t
     if args.mode is None:
         args.mode = ui.ask_choice(
-            "Game mode",
-            [
-                (CLASSIC, "Classic", MODE_BLURB[CLASSIC]),
-                (TRANSFER, "Transfer", MODE_BLURB[TRANSFER]),
-            ],
+            t("setup_mode"),
+            [(mode, t(key), t(key + "_blurb")) for mode, key in MODE_KEYS.items()],
         )
     if args.players is None:
         args.players = ui.ask_choice(
-            "How many opponents?",
+            t("setup_opponents"),
             [
-                (n + 1, f"{n} opponent{'s' if n > 1 else ''}", _table_blurb(n + 1))
+                (n + 1, t("opponents_option", n=n), _table_blurb(n + 1, t))
                 for n in range(1, 6)
             ],
         )
     if args.difficulty is None:
         args.difficulty = ui.ask_choice(
-            "Difficulty",
-            [
-                ("easy", "Easy", "plays more or less at random"),
-                ("normal", "Normal", "sheds cheap cards and hoards trumps"),
-                ("hard", "Hard", "also counts the beaten pile"),
-            ],
-            default=1,
+            t("setup_difficulty"),
+            [(key, t(key), t(key + "_blurb")) for key in DIFFICULTIES],
+            default=DIFFICULTIES.index("normal"),
         )
 
 
@@ -246,9 +268,14 @@ def default_deck_for(players: int, max_hand: int = HAND_SIZE) -> int:
 
 
 def make_opponents(
-    count: int, difficulty: str, rng: random.Random, taken: str, deck_size: int = 36
+    count: int,
+    difficulty: str,
+    rng: random.Random,
+    taken: str,
+    deck_size: int = 36,
+    lang: str = "en",
 ) -> list[AIPlayer]:
-    names = [n for n in BOT_NAMES if n.lower() != taken.lower()]
+    names = [n for n in Translator(lang).bot_names() if n.lower() != taken.lower()]
     rng.shuffle(names)
     # deck_size matters: the card-counting bot models what is still in play.
     return [AIPlayer(names[i], difficulty, rng, deck_size) for i in range(count)]
@@ -264,7 +291,12 @@ def seat_players(human, bots, rng: random.Random) -> list:
 def play_one_game(args, ui: TerminalUI, rng: random.Random) -> GameResult:
     human = HumanPlayer(args.name, ui)
     bots = make_opponents(
-        args.players - 1, args.difficulty, rng, taken=args.name, deck_size=args.deck
+        args.players - 1,
+        args.difficulty,
+        rng,
+        taken=args.name,
+        deck_size=args.deck,
+        lang=args.lang,
     )
     players = seat_players(human, bots, rng)
     game = Durak(
@@ -310,8 +342,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rng = random.Random(args.seed)
     resolve_table_size(args, parser)
 
+    if args.languages:
+        for code in LANGUAGES:
+            print(f"  {code}  {LANGUAGE_NAMES[code]}")
+        return 0
+
+    # An explicit --lang wins; otherwise take the hint from the locale.
+    if args.lang is None:
+        args.lang = detect_language()
+    if args.name is None:
+        args.name = Translator(args.lang).default_name()
+
     if args.tutorial:
-        print(tutorial_text())
+        print(tutorial_text(args.lang))
         return 0
 
     style = Style.detect(color=False if args.no_color else None, ascii_only=args.ascii)
@@ -320,15 +363,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         speed=args.speed,
         clear=not args.no_clear,
         compact=True if args.compact else None,
+        lang=args.lang,
     )
 
     try:
         # Ask about whatever was not given on the command line, unless there is
         # nobody at the keyboard to ask.
         if not args.simulate and not args.defaults and sys.stdin.isatty():
-            ui.splash("A Russian card game for 2 to 4 — last one holding cards loses")
+            ui.splash(ui.t("tagline"))
             main_menu(ui)
-            ui.splash("Set up your game")
+            # The menu can change the language; carry that choice onward.
+            args.lang = ui.lang
+            if args.name is None or Translator(args.lang).is_second_person_name(args.name):
+                args.name = Translator(args.lang).default_name()
+            ui.splash(ui.t("setup_title"))
             run_setup(ui, args)
         for field, value in DEFAULTS.items():
             if getattr(args, field) is None:
@@ -347,8 +395,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return simulate(args, rng)
 
         ui.splash(
-            f"{args.players} players · {args.difficulty} opponents · "
-            f"{args.mode} mode · {args.deck} card deck   (? for help once you are in)"
+            f"{args.players} {players_noun(args.lang, args.players)} · "
+            f"{ui.t(args.difficulty)} · {ui.t(MODE_KEYS[args.mode])} · "
+            f"{ui.t('deck_of', n=args.deck)}"
         )
 
         played = 0
@@ -358,13 +407,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if args.rounds and played >= args.rounds:
                 break
             ui.write("\n")
-            if not ui.ask_yes_no("Another game?"):
+            if not ui.ask_yes_no(ui.t("another_game")):
                 break
     except QuitGame:
-        ui.write("\n  Bye.\n")
+        ui.write("\n" + ui.t("bye") + "\n")
         return 0
     except KeyboardInterrupt:  # pragma: no cover
-        ui.write("\n  Bye.\n")
+        ui.write("\n" + ui.t("bye") + "\n")
         return 130
     return 0
 

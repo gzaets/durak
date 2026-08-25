@@ -9,9 +9,23 @@ from typing import Optional, Sequence
 
 from . import render
 from .ai import suggest_defense, suggest_move
-from .cards import Card, SUIT_NAMES
+from .cards import Card
 from .engine import GameView, Transfer
+from .i18n import (
+    BACK_WORDS,
+    DONE_WORDS,
+    HELP_WORDS,
+    HINT_WORDS,
+    NO_WORDS,
+    QUIT_WORDS,
+    STOP_DEFENDING,
+    TAKE_WORDS,
+    YES_WORDS,
+    Message,
+    Translator,
+)
 from .players import QuitGame
+from .tutorial import help_text
 from .render import BOLD, CYAN, DIM, GREEN, RED, YELLOW, Style
 
 BANNER = r"""
@@ -22,54 +36,14 @@ BANNER = r"""
 |____/ \___/|_| \_\/_/   \_\_|\_\
 """
 
-# Verbs the engine logs, in the form to use when the actor is the reader.
-SECOND_PERSON = {
-    "attacks": "attack",
-    "adds": "add",
-    "beats": "beat",
-    "takes": "take",
-    "picks": "pick",
-    "passes": "pass",
-    "holds": "hold",
-    "is": "are",
-}
-
+# Tag and colour per role; the wording comes from the translator.
 ROLE_TAGS = {
-    "attacker": ("[A]", "attacking", YELLOW),
-    "defender": ("[D]", "defending", CYAN),
-    "thrower": ("[+]", "may throw in", DIM),
-    "idle": ("[ ]", "waiting", DIM),
-    "out": ("[x]", "out — safe", GREEN),
+    "attacker": ("[A]", YELLOW),
+    "defender": ("[D]", CYAN),
+    "thrower": ("[+]", DIM),
+    "idle": ("[ ]", DIM),
+    "out": ("[x]", GREEN),
 }
-
-HELP_TEXT = """
-How to play
------------
-  Beat the attacking card with a higher card of the SAME suit, or with any
-  trump. A trump can only be beaten by a bigger trump.
-  Attackers may keep throwing in cards whose rank already appears on the
-  table, up to 6 cards or the number of cards the defender started with.
-  Beat everything and the cards are discarded; take them and the next player
-  attacks instead. The last player still holding cards is the durak.
-
-  In TRANSFER mode you have a third option while defending: if you hold a card
-  of the same rank as the card(s) attacking you, and you have not beaten
-  anything yet, you can add it and pass the whole attack to the next player
-  clockwise, who then has to beat all of them. With two players it goes back to
-  your attacker. They can pass it on again if they hold the rank too.
-
-Commands
---------
-  1 2 3 ...   play the card with that number
-  d / enter   done attacking (pass the throw-in)
-  t           take the cards on the table
-  p / p3      pass the attack on (transfer mode only)
-  b3          beat with card 3, when that card could also pass the attack on
-  s           suggest a move
-  ?           this help
-  q           quit the game
-"""
-
 
 def _choices(options: dict) -> str:
     return ",".join(str(i) for i in sorted(options))
@@ -83,8 +57,11 @@ class TerminalUI:
         clear: bool = True,
         compact: Optional[bool] = None,
         log_lines: int = 5,
+        lang: str = "en",
     ) -> None:
         self.style = style or Style.detect()
+        self.t = Translator(lang)
+        self.style.ranks = self.t.rank_letters(self.style.ascii_only)
         self.speed = max(0.0, speed)
         self.clear = clear
         self.log_lines = log_lines
@@ -96,6 +73,15 @@ class TerminalUI:
         self.scores: dict[str, int] = {}
         self.status: str = ""
 
+    @property
+    def lang(self) -> str:
+        return self.t.lang
+
+    def set_language(self, lang: str) -> None:
+        """Switch the whole interface, including how face cards are written."""
+        self.t = Translator(lang)
+        self.style.ranks = self.t.rank_letters(self.style.ascii_only)
+
     # ------------------------------------------------------------- plumbing
 
     def attach(self, engine, human) -> None:
@@ -104,12 +90,10 @@ class TerminalUI:
         self.human = human
         self.style.set_trump(engine.trump)
 
-    def event(self, message: str) -> None:
+    def event(self, message: Message) -> None:
         """Engine log sink: animate the board so AI moves are watchable."""
-        if not message.strip():
-            return
         if self.engine is None or self.human is None:
-            self.write(message + "\n")
+            self.write(self.say(message) + "\n")
             return
         if self.speed <= 0:
             return
@@ -148,32 +132,33 @@ class TerminalUI:
         self.write("\n".join(out) + "\n")
 
     def _header(self, view: GameView) -> list[str]:
-        s = self.style
-        trump_face = view.trump_card.label(s.ascii_only) if view.trump_card else "?"
-        trump = f"{s.suit(view.trump_suit)} {SUIT_NAMES[view.trump_suit]}"
+        s, t = self.style, self.t
+        trump = f"{s.suit(view.trump_suit)} {t.suit_name(view.trump_suit)}"
         if view.deck_count:
-            stock = f"stock {view.deck_count} (bottom card {trump_face})"
+            face = view.trump_card.label(s.ascii_only, s.ranks) if view.trump_card else "?"
+            stock = t("stock", n=view.deck_count, card=face)
         else:
-            stock = self._p("stock empty — endgame", YELLOW)
+            stock = self._p(t("stock_empty"), YELLOW)
         bar = (
-            f"  Trump {self._p(trump, BOLD)}   {stock}   "
-            f"beaten pile {view.discard_count}"
+            f"  {t('trump')} {self._p(trump, BOLD)}   {stock}   "
+            f"{t('discard', n=view.discard_count)}"
         )
-        mode = "" if view.mode == "classic" else self._p("  ·  transfer mode", GREEN)
-        title = self._p("  D U R A K", BOLD, CYAN) + mode
-        return [title, bar]
+        mode = "" if view.mode == "classic" else self._p(f"  ·  {t('transfer_mode')}", GREEN)
+        return [self._p("  " + t("title"), BOLD, CYAN) + mode, bar]
 
     def _opponents(self, view: GameView) -> list[str]:
-        s = self.style
-        lines = [self._p("  Players", DIM)]
-        width = max(len(p.name) for p in view.players)
+        t = self.t
+        lines = [self._p("  " + t("players"), DIM)]
+        names = {info.name: self.style.fit(info.name) for info in view.players}
+        width = max(len(name) for name in names.values())
         for info in view.players:
-            tag, label, code = ROLE_TAGS.get(info.role, ("[ ]", "", DIM))
-            you = " (you)" if info.name == view.you else ""
+            tag, code = ROLE_TAGS.get(info.role, ("[ ]", DIM))
+            label = t(f"role_{info.role}")
+            you = self.style.fit(t("you_marker")) if info.name == view.you else ""
             pips = "" if info.role == "out" else self._pips(info.hand_count)
             count = "" if info.role == "out" else f"{info.hand_count:>2} "
             row = (
-                f"  {self._p(tag, code)} {render.pad(info.name + you, width + 6)}"
+                f"  {self._p(tag, code)} {render.pad(names[info.name] + you, width + 6)}"
                 f"{count}{pips}  {self._p(label, code)}"
             )
             lines.append(row)
@@ -187,14 +172,14 @@ class TerminalUI:
 
     def _table(self, view: GameView) -> list[str]:
         s = self.style
-        header = f"  Table  {len(view.table)}/{view.attack_limit}"
+        header = f"  {self.t('table')}  {len(view.table)}/{view.attack_limit}"
         if view.taken:
-            header += self._p("   (defender is taking)", YELLOW)
+            header += self._p("   " + self.t("table_taking"), YELLOW)
         elif view.unbeaten:
-            header += self._p("   (unbeaten card on the table)", RED)
+            header += self._p("   " + self.t("table_unbeaten"), RED)
         lines = [self._p(header, DIM)]
         if not view.table:
-            lines.append(self._p("    empty", DIM))
+            lines.append(self._p("    " + self.t("table_empty"), DIM))
         elif self.compact:
             for entry in view.table:
                 left = s.card_label(entry.attack)
@@ -204,42 +189,40 @@ class TerminalUI:
             lines.extend(render.table_art(view.table, s))
         return lines
 
+    def say(self, message: Message, you: Optional[str] = None) -> str:
+        """Turn an engine event into a sentence in the current language."""
+        params = {
+            key: value.label(self.style.ascii_only, self.style.ranks)
+            if isinstance(value, Card)
+            else value
+            for key, value in message.params.items()
+        }
+        return self.t.render(Message(message.key, params), you=you)
+
     def _log(self, view: GameView) -> list[str]:
-        entries = [line for line in view.log if line.strip()][-self.log_lines :]
-        lines = [self._p("  Log", DIM)]
+        entries = view.log[-self.log_lines :]
+        lines = [self._p("  " + self.t("log"), DIM)]
         last = len(entries) - 1
-        for index, line in enumerate(entries):
-            line = self._second_person(line, view.you)
-            lines.append("    " + self._p(line, BOLD if index == last else DIM))
+        for index, message in enumerate(entries):
+            text = self.say(message, view.you)
+            lines.append("    " + self._p(text, BOLD if index == last else DIM))
         while len(lines) < self.log_lines + 1:
             lines.append("")
         return lines
 
-    def _second_person(self, line: str, you: str) -> str:
-        """"You takes the cards" reads badly — say "You take the cards".
-
-        Only applies when the player kept the default name; a real name stays
-        in the third person, which is already correct English.
-        """
-        if you.lower() != "you" or not line.startswith(you + " "):
-            return line
-        verb, _, rest = line[len(you) + 1 :].partition(" ")
-        return f"{you} {SECOND_PERSON.get(verb, verb)} {rest}".rstrip()
-
     def _hand(self, view: GameView, legal: Sequence[Card] = ()) -> list[str]:
         s = self.style
         legal_set = set(legal)
-        header = f"  Your hand ({len(view.hand)})"
-        lines = [self._p(header, DIM)]
+        lines = [self._p("  " + self.t("hand", n=len(view.hand)), DIM)]
         if not view.hand:
-            lines.append(self._p("    (empty)", DIM))
+            lines.append(self._p("    " + self.t("hand_empty"), DIM))
             return lines
         labels = [str(i + 1) for i in range(len(view.hand))]
         playable = [not legal or card in legal_set for card in view.hand]
         if self.compact:
             parts = []
             for index, card in enumerate(view.hand):
-                text = f"{index + 1}:{card.label(s.ascii_only)}"
+                text = f"{index + 1}:{card.label(s.ascii_only, s.ranks)}"
                 if not playable[index]:
                     code = DIM
                 else:
@@ -272,44 +255,47 @@ class TerminalUI:
 
     def _handle_meta(self, command: str, view: GameView, hint) -> Optional[str]:
         """Deal with the commands that are the same on every prompt."""
-        if command in ("q", "quit", "exit"):
+        if command in QUIT_WORDS:
             raise QuitGame
-        if command in ("?", "h", "help"):
-            self.write(HELP_TEXT + "\n")
-            self._read("  press enter to continue ")
+        if command in HELP_WORDS:
+            self.write(help_text(self.lang) + "\n")
+            self._read(self.t("prompt_continue"))
             return "redraw"
-        if command in ("s", "hint", "suggest"):
+        if command in HINT_WORDS:
             card = hint()
             if card is None:
-                self.status = "Hint: pass / take."
+                self.status = self.t("hint_pass")
             else:
-                self.status = f"Hint: try {card.label(self.style.ascii_only)}."
+                self.status = self.t(
+                    "hint_card", card=card.label(self.style.ascii_only, self.style.ranks)
+                )
             return "redraw"
         return None
 
     def ask_attack(self, view: GameView, legal: list[Card], initial: bool) -> Optional[Card]:
         indices = {view.hand.index(card) + 1: card for card in legal}
-        choices = ",".join(str(i) for i in sorted(indices))
+        t, choices = self.t, _choices(indices)
+        target = self._p(view.defender, CYAN)
         if initial:
-            note = f"Attack {self._p(view.defender, CYAN)} — pick a card [{choices}]"
-            note += self._p("   (? help, q quit)", DIM)
+            note = t("prompt_attack", target=target, choices=choices)
         else:
-            note = f"Throw in on {self._p(view.defender, CYAN)}? [{choices}]"
-            note += f", {self._p('d', BOLD)}=done" + self._p("   (? help, q quit)", DIM)
+            note = t("prompt_throw", target=target, choices=choices)
+            note += ", " + t("prompt_done", key=self._p("d", BOLD))
+        note += self._p(t("keys_hint"), DIM)
 
         while True:
             self._prompt(view, legal, note)
-            command = self._read("  > ")
+            command = self._read(t("prompt_input"))
             meta = self._handle_meta(command, view, lambda: suggest_move(view, legal, initial))
             if meta == "redraw":
                 continue
-            if command in ("", "d", "done", "p", "pass"):
+            if command == "" or command in DONE_WORDS:
                 if initial:
-                    self.status = "You must open the attack with a card."
+                    self.status = t("err_must_attack")
                     continue
                 return None
-            if command in ("t", "take"):
-                self.status = "You are attacking — nothing to take."
+            if command in TAKE_WORDS:
+                self.status = t("err_nothing_to_take")
                 continue
             card = self._parse_index(command, indices)
             if card is None:
@@ -323,16 +309,14 @@ class TerminalUI:
 
         while True:
             self._prompt(view, list(legal) + list(transfers), note)
-            command = self._read("  > ")
+            command = self._read(self.t("prompt_input"))
             meta = self._handle_meta(
                 command, view, lambda: suggest_defense(view, attack, legal, transfers)
             )
             if meta == "redraw":
                 continue
-            if command in ("t", "take", "", "d"):
-                return None
-
-            # An explicit b12 / p12 settles a card that could do either.
+            # The p/b prefixes come first: "p" is also the "no more throw-ins"
+            # key, and must not be read as "take" while a transfer is on offer.
             intent, number = command[:1], command[1:].strip()
             if pass_at and intent == "p":
                 card = self._pick(number, pass_at, "p")
@@ -344,32 +328,43 @@ class TerminalUI:
                 if card is not None:
                     return card
                 continue
+            if command == "" or command in TAKE_WORDS or command in STOP_DEFENDING:
+                return None
 
             card = self._parse_index(command, {**beat_at, **pass_at})
             if card is None:
                 continue
             index = view.hand.index(card) + 1
             if index in beat_at and index in pass_at:
-                label = self.style.card_label(card)
-                self.status = (
-                    f"{label} can beat it or pass it on — "
-                    f"type b{index} to beat, p{index} to pass."
+                self.status = self.t(
+                    "err_ambiguous", card=self.style.card_label(card), n=index
                 )
                 continue
             return card if index in beat_at else Transfer(card)
 
     def _defense_note(self, view: GameView, attack: Card, beat_at: dict, pass_at: dict) -> str:
+        t = self.t
         face = self.style.card_label(attack)
         unbeaten = len(view.unbeaten)
-        target = f"Beat {face}" if unbeaten < 2 else f"Beat {face} ({unbeaten} to beat)"
-        parts = [f"{target} — pick a card [{_choices(beat_at)}]" if beat_at else target]
+        head = (
+            t("prompt_beat", card=face)
+            if unbeaten < 2
+            else t("prompt_beat_many", card=face, n=unbeaten)
+        )
+        if beat_at:
+            head += " — " + t("prompt_pick", choices=_choices(beat_at))
+        parts = [head]
         if pass_at:
             parts.append(
-                f"{self._p('p', BOLD)}=pass to {self._p(view.receiver or '?', CYAN)} "
-                f"[{_choices(pass_at)}]"
+                t(
+                    "prompt_pass",
+                    key=self._p("p", BOLD),
+                    target=self._p(view.receiver or "?", CYAN),
+                    choices=_choices(pass_at),
+                )
             )
-        parts.append(f"{self._p('t', BOLD)}=take")
-        return ", ".join(parts) + self._p("   (? help, q quit)", DIM)
+        parts.append(t("prompt_take", key=self._p("t", BOLD)))
+        return ", ".join(parts) + self._p(t("keys_hint"), DIM)
 
     def _pick(self, number: str, options: dict, prefix: str):
         """Resolve the number in a 'b12' / 'p12' style command.
@@ -379,17 +374,17 @@ class TerminalUI:
         if not number:
             if len(options) == 1:
                 return next(iter(options.values()))
-            self.status = f"Which card? Add its number, e.g. {prefix}{min(options)}."
+            self.status = self.t("err_which_card", key=prefix, n=min(options))
             return None
         return self._parse_index(number, options)
 
     def _parse_index(self, command: str, indices: dict[int, Card]) -> Optional[Card]:
         if not command.isdigit():
-            self.status = f"'{command}' is not a card number. Press ? for help."
+            self.status = self.t("err_not_a_number", text=command)
             return None
         number = int(command)
         if number not in indices:
-            self.status = f"Card {number} cannot be played here."
+            self.status = self.t("err_cannot_play", n=number)
             return None
         return indices[number]
 
@@ -403,21 +398,26 @@ class TerminalUI:
         if view is not None:
             self.status = ""
             self.draw(view)
+        t = self.t
+        lost = self.human is not None and result.durak == self.human.name
         lines = [""]
         if result.durak is None:
-            lines.append("  " + self._p("A draw — everybody went out together!", BOLD))
-        elif self.human is not None and result.durak == self.human.name:
-            lines.append("  " + self._p("You are the DURAK.", RED, BOLD))
+            lines.append("  " + self._p(t("draw"), BOLD))
+        elif lost:
+            lines.append("  " + self._p(t("durak_you"), RED, BOLD))
             lines.append(self._p(FOOL_ART, RED))
         else:
-            lines.append("  " + self._p(f"{result.durak} is the DURAK!", GREEN, BOLD))
+            lines.append("  " + self._p(t("durak_other", actor=result.durak), GREEN, BOLD))
+        # Anyone who is not the durak got out safe, a draw included.
+        if self.human is not None and not lost:
+            lines.append(self._p(CROWN_ART, YELLOW))
         if result.order_out:
-            lines.append("  Went out: " + ", ".join(result.order_out))
-        lines.append(f"  Bouts played: {result.bouts}")
+            lines.append(t("went_out", names=", ".join(result.order_out)))
+        lines.append(t("bouts", n=result.bouts))
         if self.scores:
-            lines.append("\n  Durak count so far:")
+            lines.append("\n" + t("scoreboard"))
             for name, count in sorted(self.scores.items(), key=lambda kv: -kv[1]):
-                lines.append(f"    {render.pad(name, 14)} {count}")
+                lines.append(f"    {render.pad(self.style.fit(name), 14)} {count}")
         self.write("\n".join(lines) + "\n")
 
     def ask_choice(self, question: str, options: list, default: int = 0):
@@ -428,14 +428,16 @@ class TerminalUI:
                 marker = self._p("*", GREEN) if index == default + 1 else " "
                 lines.append(f"   {marker} {index}) {self._p(name, BOLD)} — {blurb}")
             self.write("\n".join(lines) + "\n")
-            answer = self._read(f"  > [1-{len(options)}, enter for {default + 1}] ")
+            answer = self._read(
+                self.t("prompt_choice", n=len(options), default=default + 1)
+            )
             if not answer:
                 return options[default][0]
-            if answer in ("q", "quit", "exit"):
+            if answer in QUIT_WORDS:
                 raise QuitGame
             if answer.isdigit() and 1 <= int(answer) <= len(options):
                 return options[int(answer) - 1][0]
-            self.write(self._p(f"  '{answer}' is not one of the options.\n", YELLOW))
+            self.write(self._p(self.t("err_not_an_option", text=answer) + "\n", YELLOW))
 
     def show_pages(self, pages: Sequence[str], footer: str = "") -> None:
         """Print long text a page at a time, so it does not scroll past."""
@@ -445,25 +447,35 @@ class TerminalUI:
             self.write(page + "\n")
             if number < total:
                 counter = self._p(f"({number}/{total})", DIM)
-                if self._read(f"  {counter} enter to continue, q to go back  ") in (
-                    "q", "quit", "back", "b"
-                ):
+                if self._read(self.t("prompt_page", counter=counter)) in BACK_WORDS:
                     return
         if footer:
             self.write("\n  " + footer + "\n")
-        self._read("  enter to go back  ")
+        self._read(self.t("prompt_back"))
 
     def ask_yes_no(self, question: str, default: bool = True) -> bool:
-        suffix = "[Y/n]" if default else "[y/N]"
+        suffix = self.t("yes_no" if default else "no_yes")
         while True:
             answer = self._read(f"  {question} {suffix} ")
             if not answer:
                 return default
-            if answer in ("y", "yes"):
+            if answer in YES_WORDS:
                 return True
-            if answer in ("n", "no", "q", "quit"):
+            if answer in NO_WORDS or answer in QUIT_WORDS:
                 return False
 
+
+CROWN_ART = r"""
+       .      .      .
+      (o)    (o)    (o)
+       |      |      |
+     \ |      |      | /
+     \_|______|______|_/
+     |                 |
+     | *      *      * |
+     |_________________|
+     `-----------------'
+"""
 
 FOOL_ART = r"""
         .-"      "-.
