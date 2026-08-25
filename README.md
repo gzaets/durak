@@ -3,7 +3,7 @@
 The Russian card game **Durak**, played in a terminal against AI opponents.
 Pure ASCII/ANSI, no graphics, no dependencies — just the standard library.
 
-Single player for now: you plus one to three computer opponents, in either of
+Single player for now: you plus one to five computer opponents, in either of
 two modes — **classic**, or **transfer**, where a defender can pass the attack
 on to the next player instead of beating it. Multiplayer is not implemented
 yet, but the engine already deals with up to six seats, so adding it later
@@ -79,7 +79,9 @@ game comes from:
    * 1) 1 opponent — 2 at the table
      2) 2 opponents — 3 at the table
      3) 3 opponents — 4 at the table
-  > [1-3, enter for 1]
+     4) 4 opponents — 5 at the table
+     5) 5 opponents — 6 at the table, dealt from 52 cards
+  > [1-5, enter for 1]
 ```
 
 Anything you pass as a flag is not asked about, and `--defaults` (or a
@@ -95,14 +97,14 @@ durak
 ## Options
 
 ```
--o, --opponents {1,2,3} number of computer opponents       (asked if omitted)
--p, --players {2,3,4}   total players, you included        (same thing, +1)
+-o, --opponents {1..5}  number of computer opponents       (asked if omitted)
+-p, --players {2..6}    total players, you included        (same thing, +1)
 -m, --mode MODE         classic | transfer                 (asked if omitted)
 -n, --name NAME         your name at the table             (default "You")
 -d, --difficulty        easy | normal | hard               (asked if omitted)
 -y, --defaults          skip the menu and setup questions
     --tutorial          print the rules and history, then exit
-    --deck {20,24,36,52}  deck size                        (default 36)
+    --deck {20,24,36,52}  deck size            (default 36, or 52 for six)
     --seed N            reproducible shuffle
     --speed SECONDS     pause per opponent move, 0 = instant  (default 0.6)
     --rounds N          play exactly N games then stop     (default: ask)
@@ -116,8 +118,8 @@ durak
 Some combinations worth knowing:
 
 ```sh
-durak -o 3 -d hard -m transfer   # a full table of the strongest bots, transfer mode
-durak -p 4 -d hard          # a full table of the strongest bots
+durak -o 5 -d hard -m transfer   # a full table of six, strongest bots, transfer mode
+durak -p 4 -d hard          # four players, the strongest bots
 durak --ascii --no-color    # for a terminal with no Unicode or colour
 durak --seed 42 --speed 0   # deterministic and instant, handy for debugging
 durak --simulate 1000 -p 3  # no UI: 1000 bot games, printed as a tally
@@ -155,6 +157,9 @@ Standard *podkidnoy* ("throw-in") Durak — throwing in is part of both modes:
 
 - 36 cards, six to ace. Everyone is dealt six. The bottom card of the stock is
   turned face up — its suit is trump, and it is the last card anybody draws.
+- Two to six players. Six is the one size the standard deck cannot seat — six
+  hands of six is all 36 cards with nothing left for a stock — so a table of
+  six is dealt from the full 52 instead, which brings the 2s to 5s into play.
 - Whoever holds the lowest trump attacks first.
 - The defender must beat each attacking card with a **higher card of the same
   suit**, or with **any trump**. A trump is only beaten by a bigger trump.
@@ -243,7 +248,7 @@ pip install -e '.[dev]'
 python3 -m pytest
 ```
 
-148 tests covering the card rules in both modes, bout resolution and transfers,
+178 tests covering the card rules in both modes, tables of two through six, bout resolution and transfers,
 drawing and elimination, the AI's tactics and relative strength, rendering and
 trump colouring, input parsing, and the menu. The AI strength tests play
 thousands of hands but use fixed seeds, so they are deterministic rather than

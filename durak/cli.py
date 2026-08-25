@@ -35,6 +35,8 @@ MODE_BLURB = {
     TRANSFER: "the defender may also pass the attack on with a matching rank",
 }
 
+# One more than the largest table, so there is always a spare when the player
+# takes one of these names for themselves.
 BOT_NAMES = [
     "Ivan",
     "Olga",
@@ -42,6 +44,8 @@ BOT_NAMES = [
     "Nadya",
     "Grisha",
     "Vera",
+    "Lyuba",
+    "Misha",
 ]
 
 
@@ -65,8 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--players",
         type=int,
         default=None,
-        choices=range(2, 5),
-        metavar="{2,3,4}",
+        choices=range(2, 7),
+        metavar="{2..6}",
         help="total number of players, you included (asked if omitted)",
     )
     parser.add_argument(
@@ -74,8 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--opponents",
         type=int,
         default=None,
-        choices=range(1, 4),
-        metavar="{1,2,3}",
+        choices=range(1, 6),
+        metavar="{1..5}",
         help="number of computer opponents (an alternative to --players)",
     )
     parser.add_argument(
@@ -108,9 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deck",
         type=int,
-        default=36,
+        default=None,
         choices=DECK_SIZES,
-        help="deck size (36 is the standard Durak deck)",
+        help="deck size (default: 36, or 52 when six are playing)",
     )
     parser.add_argument("--seed", type=int, default=None, help="seed for a reproducible shuffle")
     parser.add_argument(
@@ -168,6 +172,13 @@ def resolve_table_size(args, parser) -> None:
         args.players = implied
 
 
+def _table_blurb(players: int) -> str:
+    """What a given table size means, mentioning the bigger deck when it applies."""
+    deck = default_deck_for(players)
+    seats = f"{players} at the table"
+    return seats if deck == DEFAULT_DECK else f"{seats}, dealt from {deck} cards"
+
+
 def main_menu(ui: TerminalUI) -> None:
     """Show the front menu until the player chooses to start a game."""
     while True:
@@ -199,8 +210,10 @@ def run_setup(ui: TerminalUI, args) -> None:
     if args.players is None:
         args.players = ui.ask_choice(
             "How many opponents?",
-            [(n + 1, f"{n} opponent{'s' if n > 1 else ''}", f"{n + 1} at the table")
-             for n in (1, 2, 3)],
+            [
+                (n + 1, f"{n} opponent{'s' if n > 1 else ''}", _table_blurb(n + 1))
+                for n in range(1, 6)
+            ],
         )
     if args.difficulty is None:
         args.difficulty = ui.ask_choice(
@@ -214,10 +227,31 @@ def run_setup(ui: TerminalUI, args) -> None:
         )
 
 
-def make_opponents(count: int, difficulty: str, rng: random.Random, taken: str) -> list[AIPlayer]:
+DEFAULT_DECK = 36
+
+
+def default_deck_for(players: int, max_hand: int = HAND_SIZE) -> int:
+    """Which deck to deal from for this many players.
+
+    The standard 36 card deck unless it cannot seat them: six players need
+    37 cards to each get a hand and still leave a stock, so they get 52.
+    """
+    needed = players * max_hand + 1
+    if DEFAULT_DECK >= needed:
+        return DEFAULT_DECK
+    for size in sorted(DECK_SIZES):
+        if size >= needed:
+            return size
+    raise ValueError(f"no standard deck holds {needed} cards")
+
+
+def make_opponents(
+    count: int, difficulty: str, rng: random.Random, taken: str, deck_size: int = 36
+) -> list[AIPlayer]:
     names = [n for n in BOT_NAMES if n.lower() != taken.lower()]
     rng.shuffle(names)
-    return [AIPlayer(names[i], difficulty, rng) for i in range(count)]
+    # deck_size matters: the card-counting bot models what is still in play.
+    return [AIPlayer(names[i], difficulty, rng, deck_size) for i in range(count)]
 
 
 def seat_players(human, bots, rng: random.Random) -> list:
@@ -229,7 +263,9 @@ def seat_players(human, bots, rng: random.Random) -> list:
 
 def play_one_game(args, ui: TerminalUI, rng: random.Random) -> GameResult:
     human = HumanPlayer(args.name, ui)
-    bots = make_opponents(args.players - 1, args.difficulty, rng, taken=args.name)
+    bots = make_opponents(
+        args.players - 1, args.difficulty, rng, taken=args.name, deck_size=args.deck
+    )
     players = seat_players(human, bots, rng)
     game = Durak(
         players, rng=rng, deck_size=args.deck, log_sink=ui.event, mode=args.mode
@@ -248,7 +284,8 @@ def simulate(args, rng: random.Random) -> int:
     draws = 0
     for _ in range(args.simulate):
         players = [
-            AIPlayer(f"bot{i + 1}", args.difficulty, rng) for i in range(args.players)
+            AIPlayer(f"bot{i + 1}", args.difficulty, rng, args.deck)
+            for i in range(args.players)
         ]
         result = Durak(players, rng=rng, deck_size=args.deck, mode=args.mode).run()
         if result.durak is None:
@@ -298,10 +335,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 setattr(args, field, value)
 
         needed = args.players * HAND_SIZE + 1
-        if args.deck < needed:
+        if args.deck is None:
+            args.deck = default_deck_for(args.players)
+        elif args.deck < needed:
             parser.error(
                 f"--deck {args.deck} is too small for {args.players} players "
-                f"(need at least {needed} cards); try --deck 36"
+                f"(need at least {needed} cards); try --deck "
+                f"{default_deck_for(args.players)}"
             )
         if args.simulate:
             return simulate(args, rng)

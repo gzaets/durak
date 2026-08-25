@@ -560,3 +560,81 @@ def test_the_menu_shows_the_tutorial_then_comes_back():
     ui = ScriptedUI(["2"] + [""] * len(tutorial.SECTIONS) + ["1"])
     cli.main_menu(ui)
     assert not ui.commands
+
+
+# --------------------------------------------------------- bigger tables
+
+
+@pytest.mark.parametrize("players,deck", [(2, 36), (3, 36), (4, 36), (5, 36), (6, 52)])
+def test_the_default_deck_seats_everyone_and_leaves_a_stock(players, deck):
+    assert cli.default_deck_for(players) == deck
+    assert deck >= players * 6 + 1
+
+
+def test_the_standard_deck_is_preferred_while_it_still_fits():
+    # Two players would fit in 20 cards, but Durak is a 36 card game.
+    assert cli.default_deck_for(2) == cli.DEFAULT_DECK
+
+
+@pytest.mark.parametrize("opponents", [1, 2, 3, 4, 5])
+def test_up_to_five_opponents_can_be_asked_for(opponents):
+    parser = cli.build_parser()
+    args = parser.parse_args(["--opponents", str(opponents)])
+    cli.resolve_table_size(args, parser)
+    assert args.players == opponents + 1
+
+
+def test_seven_players_is_still_refused():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--players", "7"])
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--opponents", "6"])
+
+
+def test_there_is_always_a_spare_name_for_a_full_table():
+    rng = random.Random(0)
+    for taken in ("You", "Ivan", "Misha"):
+        bots = cli.make_opponents(5, "normal", rng, taken=taken)
+        assert len(bots) == 5
+        assert len({b.name for b in bots}) == 5
+        assert taken not in {b.name for b in bots}
+
+
+def test_six_players_are_told_which_deck_they_need():
+    assert "52" in cli._table_blurb(6)
+    assert "52" not in cli._table_blurb(4)
+
+
+def test_a_deck_too_small_for_six_names_the_one_that_works(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--players", "6", "--deck", "36", "-y"])
+    assert "try --deck 52" in capsys.readouterr().err
+
+
+def test_the_counting_bot_is_told_the_real_deck_size():
+    """A 52 card game must not leave the hard bot modelling 36 cards."""
+    rng = random.Random(0)
+    bots = cli.make_opponents(2, "hard", rng, taken="You", deck_size=52)
+    assert all(len(b._full_deck) == 52 for b in bots)
+
+
+@pytest.mark.parametrize("players", [5, 6])
+@pytest.mark.parametrize("mode", ["classic", "transfer"])
+def test_a_whole_big_table_game_can_be_played_through_stdin(
+    monkeypatch, capsys, players, mode
+):
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n\n" * 6000))
+    code = cli.main(
+        [
+            "--players", str(players),
+            "--mode", mode,
+            "--rounds", "1",
+            "--speed", "0",
+            "--no-clear",
+            "--no-color",
+            "--seed", "21",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "DURAK" in out and "Bouts played:" in out

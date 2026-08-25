@@ -477,3 +477,69 @@ def test_a_passed_on_bout_is_settled_against_the_final_defender():
     # C took, so the player after C attacks next.
     assert Card(6, H) in c.hand and Card(6, D) in c.hand
     assert game.attacker is a and game.defender is b
+
+
+# ------------------------------------------------------------ bigger tables
+
+
+@pytest.mark.parametrize("count", [2, 3, 4, 5, 6])
+def test_the_engine_seats_two_to_six(count):
+    players = [Scripted(f"p{i}") for i in range(count)]
+    game = Durak(players, rng=random.Random(0), deck_size=52)
+    game.deal()
+    assert len(game.active) == count
+    assert all(len(p.hand) == 6 for p in players)
+    assert game.deck  # a stock is left over
+
+
+def test_seven_players_are_refused():
+    with pytest.raises(ValueError):
+        Durak([Scripted(str(i)) for i in range(7)], deck_size=52)
+
+
+def test_the_attack_passes_round_a_full_table():
+    """Every seat gets a turn to attack, in order, as bouts are beaten off."""
+    players = [Scripted(f"p{i}") for i in range(6)]
+    game = Durak(players, rng=random.Random(0), deck_size=52)
+    game.attacker_seat = 0
+    seen = []
+    for _ in range(6):
+        seen.append(game.attacker_seat)
+        # Beating off the attack hands it to the defender, i.e. the next seat.
+        game.attacker_seat = game.defender_seat
+        game.defender_seat = game._next_seat(game.attacker_seat)
+    assert seen == [0, 1, 2, 3, 4, 5]
+
+
+def test_everybody_but_the_defender_may_throw_in_at_a_full_table():
+    players = [Scripted(f"p{i}") for i in range(6)]
+    game = Durak(players, rng=random.Random(0), deck_size=52)
+    game.attacker_seat, game.defender_seat = 0, 1
+    order = game.attack_order()
+    assert game.defender not in order
+    assert len(order) == 5
+    assert order[0] is game.attacker  # the attacker still goes first
+
+
+def test_a_finished_player_is_skipped_when_the_turn_comes_round():
+    players = [Scripted(f"p{i}") for i in range(6)]
+    game = Durak(players, rng=random.Random(0), deck_size=52)
+    game.finished = [players[1], players[2]]
+    assert game._next_seat(0) == 3
+    game.attacker_seat, game.defender_seat = 0, 3
+    assert players[1] not in game.attack_order()
+    assert players[2] not in game.attack_order()
+
+
+def test_a_transfer_at_a_full_table_goes_to_the_next_live_seat():
+    players = [Scripted(f"p{i}") for i in range(6)]
+    game = Durak(players, rng=random.Random(0), deck_size=52, mode=TRANSFER)
+    for player in players:
+        player.hand = [Card(9, C), Card(10, C), Card(11, C)]
+    game.attacker_seat, game.defender_seat = 0, 1
+    game.table = [TableEntry(Card(6, H))]
+    players[1].hand = [Card(6, D), Card(9, C)]
+    assert game.receiver is players[2]
+    game._pass_the_attack(Card(6, D))
+    assert game.defender is players[2]
+    assert game.attacker is players[0]  # unchanged: it did not wrap round
